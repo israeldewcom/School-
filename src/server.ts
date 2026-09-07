@@ -11,21 +11,27 @@ const PORT = env.PORT;
 
 const startServer = async () => {
   try {
-    // Connect to MongoDB and Redis with retry logic
+    // Connect to MongoDB (critical)
     logger.info('Connecting to MongoDB...');
     await connectDB();
     logger.info('MongoDB connected successfully.');
 
+    // Try Redis but don't block if it fails – it will retry in background
     logger.info('Checking Redis connection...');
-    await redis.ping();
-    logger.info('Redis ready.');
+    try {
+      await redis.ping();
+      logger.info('Redis ready.');
+    } catch (err) {
+      logger.warn('Redis is not available – some features may be degraded.');
+      // Redis will keep retrying in the background
+    }
 
-    // Start the HTTP server
+    // Start the HTTP server regardless of Redis state
     const server = app.listen(PORT, () => {
       logger.info(`SchoolFlow API running on port ${PORT}`);
     });
 
-    // Start scheduled jobs
+    // Start scheduled jobs (they will also handle Redis failures gracefully)
     await startReconciliationJob();
     await startExpiryJob();
 
@@ -34,8 +40,8 @@ const startServer = async () => {
       logger.info(`${signal} received, shutting down gracefully`);
       server.close(async () => {
         logger.info('HTTP server closed');
-        await closeAllQueues();
-        await redis.quit();
+        await closeAllQueues().catch(() => {});
+        await redis.quit().catch(() => {});
         await disconnectDB();
         process.exit(0);
       });
@@ -50,5 +56,4 @@ const startServer = async () => {
   }
 };
 
-// Start the app with retry on failure
 startServer();
