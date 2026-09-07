@@ -9,7 +9,7 @@ const generatePDF = async (data: any) => {
   return { url: 'https://example.com/report.pdf' };
 };
 
-const worker = new Worker('schoolflow:pdf', async (job) => {
+const worker = new Worker('schoolflow_pdf', async (job) => {
   const { reportCardId, paymentId } = job.data;
   if (reportCardId) {
     // Generate report card PDF
