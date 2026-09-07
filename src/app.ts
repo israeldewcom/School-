@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
-import Sentry from '@sentry/node';
+import * as Sentry from '@sentry/node';
 import * as Tracing from '@sentry/tracing';
 import { errorHandler } from './middleware/error.middleware';
 import routes from './routes';
