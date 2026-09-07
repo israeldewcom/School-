@@ -20,7 +20,7 @@ export * from './ReportCard';
 export * from './Notification';
 export * from './Message';
 export * from './Automation';
-export * from './Document';
+export * from './Document'; // exports SchoolDocument
 export * from './Subscription';
 export * from './SubscriptionPlan';
 export * from './AuditLog';
