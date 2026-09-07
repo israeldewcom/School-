@@ -11,7 +11,6 @@ export const getRedisClient = (): Redis => {
       enableReadyCheck: false,
       retryStrategy: (times) => Math.min(times * 50, 2000),
       lazyConnect: false,
-      // Force TLS and ignore certificate errors (for debugging)
       tls: {
         rejectUnauthorized: false,
       },
