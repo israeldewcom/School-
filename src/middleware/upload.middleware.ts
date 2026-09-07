@@ -1,7 +1,7 @@
+import { Request, Response, NextFunction } from 'express';
 import multer from 'multer';
 import { BadRequestError } from '../utils/errors';
 import fs from 'fs';
-import path from 'path';
 
 // Simple magic number check for images and PDFs
 const allowedTypes = {
@@ -22,15 +22,15 @@ const validateFileType = (filePath: string): string | null => {
 };
 
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
+  destination: (_req, _file, cb) => {
     cb(null, 'uploads/');
   },
-  filename: (req, file, cb) => {
+  filename: (_req, file, cb) => {
     cb(null, `${Date.now()}-${file.originalname}`);
   },
 });
 
-const fileFilter = (req: any, file: any, cb: any) => {
+const fileFilter = (_req: any, file: any, cb: any) => {
   // Accept only images and PDFs based on mimetype
   if (file.mimetype.startsWith('image/') || file.mimetype === 'application/pdf') {
     cb(null, true);
@@ -46,7 +46,7 @@ export const upload = multer({
 }).single('file');
 
 // Middleware to validate actual file content after upload
-export const validateFileContent = (req: Request, res: Response, next: NextFunction) => {
+export const validateFileContent = (req: Request, _res: Response, next: NextFunction) => {
   if (req.file) {
     const detectedMime = validateFileType(req.file.path);
     if (!detectedMime || !req.file.mimetype.startsWith(detectedMime.split('/')[0])) {
