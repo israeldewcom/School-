@@ -3,7 +3,7 @@ import { redis } from '../config/redis';
 import { sendSMS } from '../integrations/sms/termii';
 import logger from '../config/logger';
 
-const worker = new Worker('schoolflow:sms', async (job) => {
+const worker = new Worker('schoolflow_sms', async (job) => {
   const { to, message, senderId } = job.data;
   await sendSMS(to, message, senderId);
 }, {
