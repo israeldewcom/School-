@@ -16,24 +16,33 @@ const startServer = async () => {
     await connectDB();
     logger.info('MongoDB connected successfully.');
 
-    // Try Redis but don't block if it fails – it will retry in background
-    logger.info('Checking Redis connection...');
-    try {
-      await redis.ping();
-      logger.info('Redis ready.');
-    } catch (err) {
-      logger.warn('Redis is not available – some features may be degraded.');
-      // Redis will keep retrying in the background
-    }
-
-    // Start the HTTP server regardless of Redis state
+    // Start the HTTP server immediately – don't wait for Redis
     const server = app.listen(PORT, () => {
       logger.info(`SchoolFlow API running on port ${PORT}`);
     });
 
-    // Start scheduled jobs (they will also handle Redis failures gracefully)
-    await startReconciliationJob();
-    await startExpiryJob();
+    // Try Redis in the background – don't block startup
+    (async () => {
+      try {
+        await redis.ping();
+        logger.info('Redis ready.');
+        // Start jobs only after Redis is confirmed working
+        await startReconciliationJob();
+        await startExpiryJob();
+      } catch (err) {
+        logger.warn('Redis not available – jobs will be retried later.');
+        // Retry every 30 seconds
+        setInterval(async () => {
+          try {
+            await redis.ping();
+            logger.info('Redis reconnected – starting jobs.');
+            await startReconciliationJob();
+            await startExpiryJob();
+            clearInterval(this);
+          } catch (_) {}
+        }, 30000);
+      }
+    })();
 
     // Graceful shutdown
     const shutdown = async (signal: string) => {
