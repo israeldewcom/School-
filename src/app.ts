@@ -53,11 +53,23 @@ const globalLimiter = rateLimit({
 });
 app.use(globalLimiter);
 
-// Health check – returns status even if DB/Redis are down
+// Health check – responds within 2 seconds even if Redis is down
 app.get('/health', async (_req, res) => {
+  let redisOk = false;
+  try {
+    // Ping Redis with a timeout of 2 seconds
+    await Promise.race([
+      redis.ping(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000))
+    ]);
+    redisOk = true;
+  } catch (_) {
+    redisOk = false;
+  }
+
   const checks = {
     db: mongoose.connection.readyState === 1,
-    redis: await redis.ping().then(() => true).catch(() => false),
+    redis: redisOk,
     queues: true,
   };
   const healthy = Object.values(checks).every(v => v === true);
