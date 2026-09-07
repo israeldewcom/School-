@@ -1,4 +1,4 @@
-import { Document } from '../../models/Document';
+import { SchoolDocument } from '../../models/Document';
 import { NotFoundError } from '../../utils/errors';
 import { cloudinary } from '../../integrations/storage/cloudinary';
 
@@ -8,7 +8,7 @@ export class DocumentService {
     const result = await cloudinary.uploader.upload(file.path, {
       folder: `schools/${data.schoolId}/documents`,
     });
-    const doc = new Document({
+    const doc = new SchoolDocument({
       ...data,
       fileUrl: result.secure_url,
       mimeType: file.mimetype,
@@ -19,17 +19,17 @@ export class DocumentService {
   }
 
   static async getById(id: string, schoolId: string) {
-    const doc = await Document.findOne({ _id: id, schoolId });
+    const doc = await SchoolDocument.findOne({ _id: id, schoolId });
     if (!doc) throw new NotFoundError('Document not found');
     return doc;
   }
 
   static async getAll(schoolId: string, query: any) {
-    return Document.find({ schoolId, ...query });
+    return SchoolDocument.find({ schoolId, ...query });
   }
 
   static async delete(id: string, schoolId: string) {
-    const doc = await Document.findOneAndDelete({ _id: id, schoolId });
+    const doc = await SchoolDocument.findOneAndDelete({ _id: id, schoolId });
     if (!doc) throw new NotFoundError('Document not found');
     // Optionally delete from Cloudinary
     return doc;
