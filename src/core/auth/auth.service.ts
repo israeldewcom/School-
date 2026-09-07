@@ -2,7 +2,7 @@ import jwt from 'jsonwebtoken';
 import { randomBytes } from 'crypto';
 import { User } from '../../models/User';
 import { School } from '../../models/School';
-import { redis, setJSON, del, acquireLock, releaseLock } from '../../config/redis';
+import { redis, setJSON, del } from '../../config/redis';
 import { env } from '../../config/env';
 import { UnauthorizedError } from '../../utils/errors';
 import logger from '../../config/logger';
@@ -152,15 +152,19 @@ export class AuthService {
   }
 
   private static generateAccessToken(userId: string, sessionId: string): string {
-    return jwt.sign({ userId, jti: sessionId }, env.JWT_ACCESS_SECRET, {
-      expiresIn: env.JWT_ACCESS_EXPIRY,
-    });
+    return jwt.sign(
+      { userId, jti: sessionId },
+      env.JWT_ACCESS_SECRET,
+      { expiresIn: env.JWT_ACCESS_EXPIRY as any }
+    );
   }
 
   private static generateRefreshToken(userId: string, sessionId: string): string {
-    return jwt.sign({ userId, jti: sessionId }, env.JWT_REFRESH_SECRET, {
-      expiresIn: env.JWT_REFRESH_EXPIRY,
-    });
+    return jwt.sign(
+      { userId, jti: sessionId },
+      env.JWT_REFRESH_SECRET,
+      { expiresIn: env.JWT_REFRESH_EXPIRY as any }
+    );
   }
 
   private static async hashToken(token: string): Promise<string> {
@@ -168,7 +172,7 @@ export class AuthService {
     return crypto.createHash('sha256').update(token).digest('hex');
   }
 
-  private static async revokeTokenFamily(userId: string, sessionId: string): Promise<void> {
+  private static async revokeTokenFamily(userId: string, _sessionId: string): Promise<void> {
     const user = await User.findById(userId);
     if (user) {
       user.refreshTokens = [];
