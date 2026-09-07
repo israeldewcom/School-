@@ -6,7 +6,7 @@ import { sendSMS } from '../integrations/sms/termii';
 import { sendEmail } from '../integrations/email/nodemailer';
 
 const worker = new Worker('schoolflow:automations', async (job) => {
-  const { automationId, action, data } = job.data;
+  const { automationId, action } = job.data; // removed unused 'data' variable
   const automation = await Automation.findById(automationId);
   if (!automation) {
     throw new Error(`Automation ${automationId} not found`);
