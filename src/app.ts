@@ -6,14 +6,13 @@ import Sentry from '@sentry/node';
 import * as Tracing from '@sentry/tracing';
 import { errorHandler } from './middleware/error.middleware';
 import routes from './routes';
-import logger from './config/logger';
-import { env } from './config/env';
 import { connectDB } from './config/database';
 import { redis } from './config/redis';
 import { metricsMiddleware, metricsEndpoint } from './utils/metrics';
 import './workers';
 import { rawBodyMiddleware } from './middleware/rawBody.middleware';
 import mongoose from 'mongoose';
+import { env } from './config/env';
 
 // Initialize Sentry
 if (env.SENTRY_DSN) {
@@ -55,7 +54,7 @@ const globalLimiter = rateLimit({
 app.use(globalLimiter);
 
 // Health check
-app.get('/health', async (req, res) => {
+app.get('/health', async (_req, res) => {
   const checks = {
     db: mongoose.connection.readyState === 1,
     redis: await redis.ping().then(() => true).catch(() => false),
