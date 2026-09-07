@@ -18,7 +18,7 @@ declare global {
   }
 }
 
-export const authMiddleware = async (req: Request, res: Response, next: NextFunction) => {
+export const authMiddleware = async (req: Request, _res: Response, next: NextFunction) => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -67,7 +67,7 @@ export const authMiddleware = async (req: Request, res: Response, next: NextFunc
   }
 };
 
-export const requireSchoolMembership = async (req: Request, res: Response, next: NextFunction) => {
+export const requireSchoolMembership = async (req: Request, _res: Response, next: NextFunction) => {
   if (!req.user) {
     return next(new UnauthorizedError('Authentication required'));
   }
@@ -93,7 +93,7 @@ export const requireSchoolMembership = async (req: Request, res: Response, next:
   next();
 };
 
-export const requireSchoolContext = async (req: Request, res: Response, next: NextFunction) => {
+export const requireSchoolContext = async (req: Request, _res: Response, next: NextFunction) => {
   if (!req.schoolId) {
     return next(new ForbiddenError('School context required'));
   }
@@ -101,7 +101,7 @@ export const requireSchoolContext = async (req: Request, res: Response, next: Ne
 };
 
 // Refresh token theft detection and revocation
-export const revokeRefreshTokenFamily = async (userId: string, sessionId: string): Promise<void> => {
+export const revokeRefreshTokenFamily = async (userId: string, _sessionId: string): Promise<void> => {
   // Remove all refresh tokens for this user and blacklist all associated sessions
   const user = await User.findById(userId);
   if (!user) return;
