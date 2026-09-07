@@ -1,7 +1,6 @@
 import { Subscription } from '../../models/Subscription';
 import { SubscriptionPlan } from '../../models/SubscriptionPlan';
-import { School } from '../../models/School';
-import { NotFoundError, BadRequestError } from '../../utils/errors';
+import { NotFoundError } from '../../utils/errors';
 
 export class SubscriptionService {
   static async create(data: any) {
