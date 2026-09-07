@@ -24,7 +24,7 @@ export class PlatformController {
     } catch (error) { next(error); }
   }
 
-  static async getGlobalAnalytics(req: Request, res: Response, next: NextFunction) {
+  static async getGlobalAnalytics(_req: Request, res: Response, next: NextFunction) {
     try {
       const analytics = await PlatformService.getGlobalAnalytics();
       res.json({ success: true, data: analytics });
