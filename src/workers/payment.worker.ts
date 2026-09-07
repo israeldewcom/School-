@@ -1,8 +1,8 @@
 import { Worker } from 'bullmq';
 import { redis } from '../config/redis';
 import logger from '../config/logger';
-// Placeholder for payment processing (e.g., retry failed transactions)
-const worker = new Worker('schoolflow:payments', async (job) => {
+
+const worker = new Worker('schoolflow_payments', async (job) => {
   // Implement payment processing logic
   logger.info('Processing payment job:', job.data);
 }, {
