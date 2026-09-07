@@ -4,8 +4,7 @@ import { LedgerEntry } from '../../models/LedgerEntry';
 import { AuditLog } from '../../models/AuditLog';
 import { Parent } from '../../models/Parent';
 import { Student } from '../../models/Student';
-//import { Subscription } from '../../models/Subscription';
-import { SubscriptionPlan } from '../../models/SubscriptionPlan';
+import { Subscription } from '../../models/Subscription'; // ✅ Added
 import { NotFoundError, BadRequestError } from '../../utils/errors';
 import { acquireLock, releaseLock } from '../../config/redis';
 import { smsQueue, emailQueue, pdfQueue, automationQueue } from '../../jobs/queues';
@@ -98,7 +97,7 @@ export class PaymentService {
 
         // --- RENEWAL BRIDGE: if invoice is fully paid, extend subscription using frozen duration ---
         if (invoice.balance <= 0) {
-          const subscription = await Subscription.findOne({ 
+          const subscription = await Subscription.findOne({
             schoolId: invoice.schoolId,
             status: { $in: ['ACTIVE', 'EXPIRED', 'PAST_DUE'] }
           });
@@ -219,7 +218,7 @@ export class PaymentService {
 
       // --- RENEWAL BRIDGE: if invoice is fully paid, extend subscription using frozen duration ---
       if (invoice.balance <= 0) {
-        const subscription = await Subscription.findOne({ 
+        const subscription = await Subscription.findOne({
           schoolId: invoice.schoolId,
           status: { $in: ['ACTIVE', 'EXPIRED', 'PAST_DUE'] }
         });
