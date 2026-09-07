@@ -11,11 +11,20 @@ export const connectDB = async (): Promise<void> => {
   }
 
   try {
-    const conn = await mongoose.connect(env.MONGODB_URI, {
+    const options: mongoose.ConnectOptions = {
       serverSelectionTimeoutMS: 5000,
       socketTimeoutMS: 45000,
-      replicaSet: env.MONGODB_REPLICA_SET,
-    });
+      // Force TLS and allow self‑signed certificates (for debugging)
+      tls: true,
+      tlsAllowInvalidCertificates: true,
+    };
+
+    // Only set replicaSet if it's explicitly provided and NOT using Atlas (mongodb+srv)
+    if (env.MONGODB_REPLICA_SET && !env.MONGODB_URI.includes('mongodb+srv')) {
+      options.replicaSet = env.MONGODB_REPLICA_SET;
+    }
+
+    const conn = await mongoose.connect(env.MONGODB_URI, options);
     isConnected = true;
     logger.info(`MongoDB Connected: ${conn.connection.host}`);
 
