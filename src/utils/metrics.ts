@@ -37,7 +37,7 @@ export const metricsMiddleware = (req: Request, res: Response, next: NextFunctio
   next();
 };
 
-export const metricsEndpoint = async (req: Request, res: Response) => {
+export const metricsEndpoint = async (_req: Request, res: Response) => {
   res.set('Content-Type', register.contentType);
   res.end(await register.metrics());
 };
