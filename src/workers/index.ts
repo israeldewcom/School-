@@ -1,0 +1,9 @@
+import './sms.worker';
+import './email.worker';
+import './pdf.worker';
+import './payment.worker';
+import './automation.worker';
+import './report.worker';
+import './notification.worker';
+import './reconciliation.worker';
+import './expiry.worker';
