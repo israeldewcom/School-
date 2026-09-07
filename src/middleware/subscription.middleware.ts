@@ -4,7 +4,7 @@ import { ForbiddenError } from '../utils/errors';
 import logger from '../config/logger';
 import { getJSON, setJSON, del } from '../config/redis';
 
-export const requireActiveSubscription = async (req: Request, res: Response, next: NextFunction) => {
+export const requireActiveSubscription = async (req: Request, _res: Response, next: NextFunction) => {
   // Skip for super admin
   if (req.user?.role === 'SUPER_ADMIN') {
     return next();
