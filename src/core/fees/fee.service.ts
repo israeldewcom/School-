@@ -1,6 +1,6 @@
 import { FeeCategory } from '../../models/FeeCategory';
 import { FeeStructure } from '../../models/FeeStructure';
-import { NotFoundError, BadRequestError } from '../../utils/errors';
+import { NotFoundError } from '../../utils/errors';
 
 export class FeeService {
   // FeeCategory CRUD
