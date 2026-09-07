@@ -1,10 +1,10 @@
 import { Request, Response, NextFunction } from 'express';
 import { ForbiddenError } from '../utils/errors';
 import { Permission } from '../models/Permission';
-import { redis, getJSON, setJSON } from '../config/redis';
+import { getJSON, setJSON } from '../config/redis';
 
 export const requirePermission = (resource: string, action: string) => {
-  return async (req: Request, res: Response, next: NextFunction) => {
+  return async (req: Request, _res: Response, next: NextFunction) => {
     if (!req.user) {
       return next(new ForbiddenError('Not authenticated'));
     }
