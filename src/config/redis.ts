@@ -7,9 +7,9 @@ let client: Redis;
 export const getRedisClient = (): Redis => {
   if (!client) {
     client = new Redis(env.REDIS_URL, {
-      maxRetriesPerRequest: 3,
+      maxRetriesPerRequest: null, // Required for BullMQ
+      enableReadyCheck: false,    // Improves performance with BullMQ
       retryStrategy: (times) => Math.min(times * 50, 2000),
-      enableReadyCheck: true,
       lazyConnect: false,
     });
 
