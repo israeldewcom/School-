@@ -12,12 +12,16 @@ export const getRedisClient = (): Redis => {
       retryStrategy: (times) => Math.min(times * 50, 2000),
       lazyConnect: false,
       tls: {
-        rejectUnauthorized: false,
+        rejectUnauthorized: false, // ignore self-signed certificates
       },
     });
 
     client.on('connect', () => logger.info('Redis connected'));
-    client.on('error', (err) => logger.error('Redis error:', err));
+    client.on('error', (err) => {
+      logger.error('Redis error:', err);
+      // Attempt reconnection after 5 seconds
+      setTimeout(() => client.connect().catch(() => {}), 5000);
+    });
     client.on('close', () => logger.warn('Redis connection closed'));
     client.on('ready', () => logger.info('Redis ready'));
   }
