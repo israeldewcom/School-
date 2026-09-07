@@ -2,7 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { Buffer } from 'buffer';
 
 // Store raw body on request
-export const rawBodyMiddleware = (req: Request, res: Response, next: NextFunction) => {
+export const rawBodyMiddleware = (req: Request, _res: Response, next: NextFunction) => {
   let data: Buffer[] = [];
   req.on('data', (chunk) => {
     data.push(chunk);
