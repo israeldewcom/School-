@@ -3,7 +3,7 @@ import jsonLogic from 'json-logic-js';
 export const evaluateCondition = (condition: any, data: any): boolean => {
   try {
     return jsonLogic.apply(condition, data);
-  } catch (error) {
+  } catch (error: any) {
     throw new Error(`Condition evaluation failed: ${error.message}`);
   }
 };
