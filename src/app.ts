@@ -14,7 +14,7 @@ import { rawBodyMiddleware } from './middleware/rawBody.middleware';
 import mongoose from 'mongoose';
 import { env } from './config/env';
 
-// Initialize Sentry
+// Initialize Sentry only if DSN is provided
 if (env.SENTRY_DSN) {
   Sentry.init({
     dsn: env.SENTRY_DSN,
@@ -29,7 +29,7 @@ if (env.SENTRY_DSN) {
 
 const app = express();
 
-// Connect to DB and ensure replica set
+// Connect to DB (done in server.ts, but keep this for fallback)
 connectDB();
 
 // Security middleware
@@ -53,12 +53,12 @@ const globalLimiter = rateLimit({
 });
 app.use(globalLimiter);
 
-// Health check
+// Health check – returns status even if DB/Redis are down
 app.get('/health', async (_req, res) => {
   const checks = {
     db: mongoose.connection.readyState === 1,
     redis: await redis.ping().then(() => true).catch(() => false),
-    queues: true, // could check worker liveness
+    queues: true,
   };
   const healthy = Object.values(checks).every(v => v === true);
   res.status(healthy ? 200 : 503).json({
@@ -68,7 +68,7 @@ app.get('/health', async (_req, res) => {
   });
 });
 
-// Raw body for webhooks (must come before JSON parser)
+// Raw body for webhooks
 app.use('/api/v1/webhooks', rawBodyMiddleware);
 
 // JSON and URL-encoded body parsing
@@ -78,8 +78,10 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // Routes
 app.use('/api/v1', routes);
 
-// Sentry error handler (must be before our errorHandler)
-app.use(Sentry.Handlers.errorHandler());
+// Sentry error handler – only if Sentry is initialized
+if (env.SENTRY_DSN) {
+  app.use(Sentry.Handlers.errorHandler());
+}
 
 // Custom error handler
 app.use(errorHandler);
