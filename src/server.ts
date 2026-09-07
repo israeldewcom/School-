@@ -11,19 +11,25 @@ const PORT = env.PORT;
 
 const startServer = async () => {
   try {
-    // Ensure DB connected
+    // Connect to MongoDB and Redis with retry logic
+    logger.info('Connecting to MongoDB...');
     await connectDB();
-    await redis.ping();
-    logger.info('Redis ready');
+    logger.info('MongoDB connected successfully.');
 
+    logger.info('Checking Redis connection...');
+    await redis.ping();
+    logger.info('Redis ready.');
+
+    // Start the HTTP server
     const server = app.listen(PORT, () => {
       logger.info(`SchoolFlow API running on port ${PORT}`);
     });
 
-    // Start scheduled jobs (now using BullMQ)
+    // Start scheduled jobs
     await startReconciliationJob();
     await startExpiryJob();
 
+    // Graceful shutdown
     const shutdown = async (signal: string) => {
       logger.info(`${signal} received, shutting down gracefully`);
       server.close(async () => {
@@ -39,8 +45,10 @@ const startServer = async () => {
     process.on('SIGINT', () => shutdown('SIGINT'));
   } catch (error) {
     logger.error('Failed to start server:', error);
-    process.exit(1);
+    // Retry after 5 seconds
+    setTimeout(startServer, 5000);
   }
 };
 
+// Start the app with retry on failure
 startServer();
