@@ -1,5 +1,5 @@
 import Redis from 'ioredis';
-import logger from './config/logger'; // adjust path if needed
+import logger from './logger';
 import { env } from './env';
 
 let client: Redis;
