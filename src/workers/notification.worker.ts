@@ -1,8 +1,8 @@
 import { Worker } from 'bullmq';
 import { redis } from '../config/redis';
 import logger from '../config/logger';
-// Placeholder for push notifications
-const worker = new Worker('schoolflow:notifications', async (job) => {
+
+const worker = new Worker('schoolflow_notifications', async (job) => {
   logger.info('Sending notification:', job.data);
 }, {
   connection: redis,
