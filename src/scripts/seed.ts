@@ -1,6 +1,4 @@
-import mongoose from 'mongoose';
 import { User } from '../models/User';
-import { School } from '../models/School';
 import { SubscriptionPlan } from '../models/SubscriptionPlan';
 import { Permission } from '../models/Permission';
 import { connectDB } from '../config/database';
