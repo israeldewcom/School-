@@ -1,6 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
 import { InvoiceService } from './invoice.service';
-import { idempotencyMiddleware } from '../../middleware/idempotency.middleware';
 
 export class InvoiceController {
   static async generate(req: Request, res: Response, next: NextFunction) {
