@@ -1,4 +1,3 @@
-import mongoose from 'mongoose';
 import { Subscription } from '../models/Subscription';
 import { SubscriptionPlan } from '../models/SubscriptionPlan';
 import { connectDB } from '../config/database';
