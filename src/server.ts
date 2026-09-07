@@ -4,6 +4,8 @@ import { connectDB, disconnectDB } from './config/database';
 import { redis } from './config/redis';
 import { env } from './config/env';
 import { closeAllQueues } from './jobs/queues';
+import { startReconciliationJob } from './jobs/reconciliation.job';
+import { startExpiryJob } from './jobs/expiry.job';
 
 const PORT = env.PORT;
 
@@ -30,7 +32,6 @@ const startServer = () => {
       await redis.ping();
       logger.info('Redis ready.');
       // Start jobs only if Redis is available
-      const { startReconciliationJob, startExpiryJob } = await import('./jobs/reconciliation.job');
       await startReconciliationJob();
       await startExpiryJob();
     } catch (err) {
@@ -39,7 +40,6 @@ const startServer = () => {
         try {
           await redis.ping();
           logger.info('Redis reconnected – starting jobs.');
-          const { startReconciliationJob, startExpiryJob } = await import('./jobs/reconciliation.job');
           await startReconciliationJob();
           await startExpiryJob();
           clearInterval(this);
