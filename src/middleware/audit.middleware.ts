@@ -17,7 +17,7 @@ export const auditMiddleware = (resource: string, action: string) => {
         userAgent: req.headers['user-agent'],
         requestId: req.headers['x-request-id'],
       });
-      auditLog.save().catch(err => logger.error('Audit log failed:', err));
+      auditLog.save().catch((err: any) => logger.error('Audit log failed:', err));
       return originalSend.call(this, body);
     };
     next();
