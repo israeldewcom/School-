@@ -1,39 +1,53 @@
 import Redis from 'ioredis';
-import logger from './logger';
+import logger from './config/logger'; // adjust path if needed
 import { env } from './env';
 
 let client: Redis;
-let redisReady = false;
 
-export const getRedisClient = (): Redis => {
+const getRedisClient = (): Redis => {
   if (!client) {
-    client = new Redis(env.REDIS_URL, {
+    const url = env.REDIS_URL;
+    if (!url) {
+      logger.warn('REDIS_URL not set – Redis features disabled');
+      // Return a dummy client that does nothing
+      return new Redis({ lazyConnect: true });
+    }
+
+    client = new Redis(url, {
       maxRetriesPerRequest: null,
       enableReadyCheck: false,
-      retryStrategy: (times) => Math.min(times * 50, 2000),
-      lazyConnect: false,
+      connectTimeout: 10000,
+      retryStrategy: (times) => {
+        // Exponential backoff: 1s, 2s, 4s, 8s, 16s... up to 60s
+        const delay = Math.min(Math.pow(2, times) * 1000, 60000);
+        logger.warn(`Redis reconnect attempt ${times} in ${delay}ms`);
+        return delay;
+      },
       tls: {
         rejectUnauthorized: false,
       },
     });
 
+    // Suppress repeated error logs (only log once per error type)
+    let lastErrorTime = 0;
+    client.on('error', (err) => {
+      const now = Date.now();
+      if (now - lastErrorTime > 30000) { // log at most once per 30s
+        logger.error('Redis error:', err.message);
+        lastErrorTime = now;
+      }
+    });
+
     client.on('connect', () => {
       logger.info('Redis connected');
-      redisReady = true;
     });
-    client.on('error', (err) => {
-      logger.error('Redis error:', err.message);
-      redisReady = false;
-      // Attempt reconnection after 5 seconds
-      setTimeout(() => client.connect().catch(() => {}), 5000);
-    });
-    client.on('close', () => {
-      logger.warn('Redis connection closed');
-      redisReady = false;
-    });
+
     client.on('ready', () => {
       logger.info('Redis ready');
-      redisReady = true;
+    });
+
+    client.on('close', () => {
+      logger.warn('Redis connection closed');
     });
   }
   return client;
@@ -41,16 +55,14 @@ export const getRedisClient = (): Redis => {
 
 export const redis = getRedisClient();
 
-// Wrappers that safely handle cases where Redis is down
+// Wrappers that silently fail if Redis is down
 const safeRedis = async <T>(fn: () => Promise<T>, fallback: T): Promise<T> => {
-  if (!redisReady) {
-    logger.warn('Redis not ready, using fallback');
+  if (!redis.status || redis.status === 'end' || redis.status === 'close') {
     return fallback;
   }
   try {
     return await fn();
-  } catch (error) {
-    logger.error('Redis operation failed:', error);
+  } catch (_) {
     return fallback;
   }
 };
