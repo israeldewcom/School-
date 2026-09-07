@@ -14,7 +14,7 @@ export const connectDB = async (): Promise<void> => {
     const options: mongoose.ConnectOptions = {
       serverSelectionTimeoutMS: 5000,
       socketTimeoutMS: 45000,
-      // Force TLS and allow self‑signed certificates (for debugging)
+      // Force TLS and ignore certificate errors
       tls: true,
       tlsAllowInvalidCertificates: true,
     };
