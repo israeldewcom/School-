@@ -3,7 +3,7 @@ import { redis } from '../config/redis';
 import { checkExpiredSubscriptions } from '../jobs/expiry.job';
 import logger from '../config/logger';
 
-const worker = new Worker('schoolflow:expiry', async (job) => {
+const worker = new Worker('schoolflow_expiry', async (job) => {
   if (job.name === 'check-expired') {
     await checkExpiredSubscriptions();
   }
