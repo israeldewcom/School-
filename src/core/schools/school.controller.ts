@@ -15,7 +15,8 @@ export class SchoolController {
     try {
       if (req.user.role !== 'SUPER_ADMIN') {
         const school = await SchoolService.getById(req.schoolId!);
-        return res.json({ success: true, data: school });
+        res.json({ success: true, data: school });
+        return;
       }
       const schools = await SchoolService.getAll(req.query);
       res.json({ success: true, data: schools });
