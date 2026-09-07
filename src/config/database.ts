@@ -12,11 +12,15 @@ export const connectDB = async (): Promise<void> => {
 
   try {
     const options: mongoose.ConnectOptions = {
-      serverSelectionTimeoutMS: 5000,
+      serverSelectionTimeoutMS: 10000,
       socketTimeoutMS: 45000,
-      // Force TLS and ignore certificate errors – required for Atlas
+      // Force TLS and ignore certificate/hostname errors
       tls: true,
       tlsAllowInvalidCertificates: true,
+      tlsAllowInvalidHostnames: true,
+      // For older Node versions, also set these:
+      sslValidate: false,
+      rejectUnauthorized: false,
     };
 
     // Only set replicaSet if explicitly provided and not using Atlas (mongodb+srv)
@@ -31,18 +35,18 @@ export const connectDB = async (): Promise<void> => {
     mongoose.connection.on('error', (err) => {
       logger.error('MongoDB connection error:', err);
       isConnected = false;
-      // Attempt reconnection after 5 seconds
-      setTimeout(() => connectDB(), 5000);
+      // Attempt reconnection after 10 seconds
+      setTimeout(() => connectDB(), 10000);
     });
 
     mongoose.connection.on('disconnected', () => {
       logger.warn('MongoDB disconnected');
       isConnected = false;
-      setTimeout(() => connectDB(), 5000);
+      setTimeout(() => connectDB(), 10000);
     });
   } catch (error) {
     logger.error('MongoDB connection error:', error);
-    throw error; // Let server.ts handle retry
+    throw error;
   }
 };
 
