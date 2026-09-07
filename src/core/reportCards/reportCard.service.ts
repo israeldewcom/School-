@@ -76,7 +76,6 @@ export class ReportCardService {
     const classAverage = overallCount > 0 ? overallTotal / overallCount : 0;
 
     // Calculate position for this student
-    const studentTotal = results.reduce((sum, r) => sum + (r.total || 0), 0);
     // Get all student totals for this class/term
     const studentTotals = await Result.aggregate([
       { $match: { classId, sessionId, termId } },
@@ -154,7 +153,7 @@ export class ReportCardService {
     return reports;
   }
 
-  static async publishReportCard(reportCardId: string, publishedBy: string) {
+  static async publishReportCard(reportCardId: string, _publishedBy: string) {
     const reportCard = await ReportCard.findById(reportCardId);
     if (!reportCard) throw new NotFoundError('Report card not found');
     if (reportCard.status !== 'GENERATED') {
