@@ -2,7 +2,7 @@ import { School } from '../../models/School';
 import { Subscription } from '../../models/Subscription';
 import { SubscriptionPlan } from '../../models/SubscriptionPlan';
 import { AuditLog } from '../../models/AuditLog';
-import { NotFoundError, BadRequestError } from '../../utils/errors';
+import { NotFoundError } from '../../utils/errors';
 
 export class PlatformService {
   static async listSchools(query: any) {
