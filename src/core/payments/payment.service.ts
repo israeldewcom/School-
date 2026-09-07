@@ -7,7 +7,7 @@ import { Student } from '../../models/Student';
 import { Subscription } from '../../models/Subscription';
 import { SubscriptionPlan } from '../../models/SubscriptionPlan';
 import { NotFoundError, BadRequestError } from '../../utils/errors';
-import { redis, acquireLock, releaseLock } from '../../config/redis';
+import { acquireLock, releaseLock } from '../../config/redis';
 import { smsQueue, emailQueue, pdfQueue, automationQueue } from '../../jobs/queues';
 import logger from '../../config/logger';
 import { env } from '../../config/env';
@@ -197,7 +197,7 @@ export class PaymentService {
     try {
       payment.status = 'CONFIRMED';
       payment.confirmedAt = new Date();
-      payment.receivedBy = approverId;
+      payment.receivedBy = new mongoose.Types.ObjectId(approverId);
       await payment.save({ session });
 
       invoice.amountPaid += payment.amount;
