@@ -2,7 +2,6 @@ import { Student } from '../../models/Student';
 import { Invoice } from '../../models/Invoice';
 import { Payment } from '../../models/Payment';
 import { Parser } from 'json2csv';
-import { NotFoundError } from '../../utils/errors';
 
 export class ExportService {
   static async exportStudents(schoolId: string) {
