@@ -1,0 +1,51 @@
+export const ROLES = {
+  SUPER_ADMIN: 'SUPER_ADMIN',
+  SCHOOL_OWNER: 'SCHOOL_OWNER',
+  ACCOUNTANT: 'ACCOUNTANT',
+  TEACHER: 'TEACHER',
+  STAFF: 'STAFF',
+  PARENT: 'PARENT',
+} as const;
+
+export const SUBSCRIPTION_STATUS = {
+  ACTIVE: 'ACTIVE',
+  CANCELLED: 'CANCELLED',
+  EXPIRED: 'EXPIRED',
+  PAST_DUE: 'PAST_DUE',
+} as const;
+
+export const INVOICE_STATUS = {
+  DRAFT: 'DRAFT',
+  ISSUED: 'ISSUED',
+  PARTIALLY_PAID: 'PARTIALLY_PAID',
+  PAID: 'PAID',
+  OVERDUE: 'OVERDUE',
+  CANCELLED: 'CANCELLED',
+} as const;
+
+export const PAYMENT_STATUS = {
+  PENDING: 'PENDING',
+  CONFIRMED: 'CONFIRMED',
+  FAILED: 'FAILED',
+  REVERSED: 'REVERSED',
+  REFUNDED: 'REFUNDED',
+} as const;
+
+export const ATTENDANCE_STATUS = {
+  PRESENT: 'PRESENT',
+  ABSENT: 'ABSENT',
+  LATE: 'LATE',
+  EXCUSED: 'EXCUSED',
+} as const;
+
+export const BILLING_CYCLE = {
+  MONTHLY: 'MONTHLY',
+  TERMLY: 'TERMLY',
+  ANNUAL: 'ANNUAL',
+} as const;
+
+export const BILLING_DAYS: Record<string, number> = {
+  MONTHLY: 30,
+  TERMLY: 90,
+  ANNUAL: 365,
+};
