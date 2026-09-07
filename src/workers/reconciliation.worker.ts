@@ -3,7 +3,7 @@ import { redis } from '../config/redis';
 import { PaymentService } from '../core/payments/payment.service';
 import logger from '../config/logger';
 
-const worker = new Worker('schoolflow:reconciliation', async (job) => {
+const worker = new Worker('schoolflow_reconciliation', async (job) => {
   if (job.name === 'reconcile-payments') {
     const count = await PaymentService.reconcilePendingPayments();
     logger.info(`Reconciled ${count} pending payments`);
