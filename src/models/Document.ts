@@ -1,6 +1,6 @@
-import mongoose, { Schema, Document } from 'mongoose';
+import mongoose, { Schema } from 'mongoose';
 
-export interface IDocument extends Document {
+export interface ISchoolDocument extends mongoose.Document {
   schoolId: mongoose.Types.ObjectId;
   title: string;
   description?: string;
@@ -14,7 +14,7 @@ export interface IDocument extends Document {
   updatedAt: Date;
 }
 
-const DocumentSchema = new Schema<IDocument>(
+const DocumentSchema = new Schema<ISchoolDocument>(
   {
     schoolId: { type: Schema.Types.ObjectId, ref: 'School', required: true, index: true },
     title: { type: String, required: true },
@@ -29,4 +29,4 @@ const DocumentSchema = new Schema<IDocument>(
   { timestamps: true }
 );
 
-export const Document = mongoose.model<IDocument>('Document', DocumentSchema);
+export const SchoolDocument = mongoose.model<ISchoolDocument>('Document', DocumentSchema);
