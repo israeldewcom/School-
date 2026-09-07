@@ -38,7 +38,7 @@ export class SubscriptionController {
     } catch (error) { next(error); }
   }
 
-  static async getPlans(req: Request, res: Response, next: NextFunction) {
+  static async getPlans(_req: Request, res: Response, next: NextFunction) {
     try {
       const plans = await SubscriptionService.getPlans();
       res.json({ success: true, data: plans });
