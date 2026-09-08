@@ -13,6 +13,14 @@ const getRedisClient = (): Redis => {
       return new Redis({ lazyConnect: true });
     }
 
+    const isTls = url.startsWith('rediss://');
+    let host: string | undefined;
+    try {
+      host = new URL(url).hostname;
+    } catch (_) {
+      host = undefined;
+    }
+
     client = new Redis(url, {
       maxRetriesPerRequest: null,
       enableReadyCheck: false,
@@ -23,9 +31,18 @@ const getRedisClient = (): Redis => {
         logger.warn(`Redis reconnect attempt ${times} in ${delay}ms`);
         return delay;
       },
-      tls: {
-        rejectUnauthorized: false,
-      },
+      // Only attach TLS options when the URL scheme is rediss://.
+      // Passing a tls object alongside a plain redis:// URL, or omitting
+      // servername for a rediss:// URL, is a common cause of silent
+      // connect-error-retry loops with managed Redis providers.
+      ...(isTls
+        ? {
+            tls: {
+              rejectUnauthorized: false,
+              servername: host,
+            },
+          }
+        : {}),
     });
 
     // Suppress repeated error logs (only log once per error type)
