@@ -4,7 +4,6 @@ import { User } from '../../models/User';
 import { Class } from '../../models/Class';
 import { AuthService } from '../auth/auth.service';
 import logger from '../../config/logger';
-import mongoose from 'mongoose';
 
 export class SchoolController {
   static async ping(_req: Request, res: Response) {
@@ -179,7 +178,6 @@ export class SchoolController {
       // 4. (Optional) Load sample data – stub for now
       if (loadSample) {
         logger.info('Sample data requested for school', school._id);
-        // You can implement sample data seeding here
       }
 
       // 5. Auto-login the owner (generate tokens)
@@ -201,13 +199,11 @@ export class SchoolController {
         },
       });
     } catch (error) {
-      // Log the full error stack
       logger.error('Onboarding error:', error);
-      // Send a detailed error response for debugging
       res.status(500).json({
         success: false,
         message: error instanceof Error ? error.message : 'Internal server error',
-        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
+        stack: process.env.NODE_ENV === 'development' && error instanceof Error ? error.stack : undefined,
       });
     }
   }
