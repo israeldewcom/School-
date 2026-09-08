@@ -3,6 +3,7 @@ import argon2 from 'argon2';
 
 export interface IUser extends Document {
   email: string;
+  username: string;
   password: string;
   firstName: string;
   lastName: string;
@@ -19,12 +20,13 @@ export interface IUser extends Document {
 const UserSchema = new Schema<IUser>(
   {
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
+    username: { type: String, required: true, unique: true, trim: true },
     password: { type: String, required: true },
     firstName: { type: String, required: true, trim: true },
     lastName: { type: String, required: true, trim: true },
     role: {
       type: String,
-      enum: ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ACCOUNTANT', 'TEACHER', 'STAFF', 'PARENT'],
+      enum: ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'BURSAR', 'TEACHER', 'STAFF', 'PARENT'],
       required: true,
     },
     schoolId: { type: Schema.Types.ObjectId, ref: 'School', index: true },
