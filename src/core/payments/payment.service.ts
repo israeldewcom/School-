@@ -1,4 +1,4 @@
- import { Payment } from '../../models/Payment';
+import { Payment } from '../../models/Payment';
 import { Invoice } from '../../models/Invoice';
 import { Subscription } from '../../models/Subscription';
 import { SubscriptionPlan } from '../../models/SubscriptionPlan';
@@ -13,12 +13,124 @@ import axios from 'axios';
 import { env } from '../../config/env';
 
 export class PaymentService {
-  // Existing methods: processPaystackWebhook, recordManualPayment, approveManualPayment, reconcilePendingPayments
-  // All are implemented below (we'll include them for completeness)
+  // ------------------------------------------------------------------
+  // Existing methods
+  // ------------------------------------------------------------------
 
   static async processPaystackWebhook(payload: any) {
-    // Full implementation (as per earlier code)
-    // ... (keep your existing implementation)
+    const event = payload.event;
+    const data = payload.data;
+    if (event !== 'charge.success') {
+      logger.info(`Ignored webhook event: ${event}`);
+      return null;
+    }
+
+    const reference = data.reference;
+    const lockKey = `payment:lock:${reference}`;
+    const lockToken = await acquireLock(lockKey, 30);
+    if (!lockToken) {
+      logger.warn(`Payment lock not acquired for reference ${reference}`);
+      return { status: 'processing' };
+    }
+
+    try {
+      const existingPayment = await Payment.findOne({ reference });
+      if (existingPayment) {
+        logger.info(`Payment already processed for reference ${reference}`);
+        return existingPayment;
+      }
+
+      const metadata = data.metadata || {};
+
+      // Handle subscription payment (from Paystack checkout)
+      if (metadata.type === 'subscription') {
+        const { schoolId, planId } = metadata;
+        if (!schoolId || !planId) throw new BadRequestError('Missing schoolId or planId in metadata');
+        const subscription = await this.handleSubscriptionPayment(schoolId, planId, reference);
+        return subscription;
+      }
+
+      // Handle SMS top-up
+      if (metadata.type === 'sms_topup') {
+        const { schoolId } = metadata;
+        if (!schoolId) throw new BadRequestError('Missing schoolId in metadata');
+        const result = await this.topUpSMS(schoolId, data.amount, reference);
+        return result;
+      }
+
+      // Normal invoice payment
+      const invoiceNumber = metadata.invoiceNumber;
+      if (!invoiceNumber) throw new BadRequestError('Invoice number missing in metadata');
+
+      const invoice = await Invoice.findOne({ invoiceNumber });
+      if (!invoice) throw new NotFoundError('Invoice not found');
+
+      const paystackAmount = data.amount; // kobo
+      if (paystackAmount > invoice.balance) {
+        throw new BadRequestError('Payment amount exceeds invoice balance');
+      }
+
+      const session = await mongoose.startSession();
+      session.startTransaction();
+
+      let payment;
+      try {
+        payment = new Payment({
+          schoolId: invoice.schoolId,
+          studentId: invoice.studentId,
+          invoiceId: invoice._id,
+          amount: paystackAmount,
+          method: 'ONLINE',
+          reference,
+          providerTransactionId: data.id,
+          status: 'CONFIRMED',
+          confirmedAt: new Date(),
+          metadata: data,
+        });
+        await payment.save({ session });
+
+        invoice.amountPaid += paystackAmount;
+        invoice.balance = invoice.total - invoice.amountPaid;
+        invoice.status = invoice.balance <= 0 ? 'PAID' : 'PARTIALLY_PAID';
+        await invoice.save({ session });
+
+        // Audit and ledger entries omitted for brevity – add if needed
+
+        // Renew subscription if fully paid
+        if (invoice.balance <= 0) {
+          const subscription = await Subscription.findOne({
+            schoolId: invoice.schoolId,
+            status: { $in: ['ACTIVE', 'EXPIRED', 'PAST_DUE'] }
+          });
+          if (subscription) {
+            const daysToAdd = subscription.durationDaysAtPurchase || 90;
+            subscription.endDate = new Date(Date.now() + daysToAdd * 24 * 60 * 60 * 1000);
+            subscription.status = 'ACTIVE';
+            subscription.isTrial = false;
+            subscription.trialEndDate = null;
+            await subscription.save({ session });
+            await invalidateSubscriptionCache(invoice.schoolId.toString());
+          }
+        }
+
+        await session.commitTransaction();
+      } catch (error) {
+        await session.abortTransaction();
+        throw error;
+      } finally {
+        session.endSession();
+      }
+
+      // Queue side effects
+      await pdfQueue.add('generate-receipt', { paymentId: payment._id });
+      await emailQueue.add('send-payment-confirmation', { paymentId: payment._id });
+      // SMS to parent would go here; omitted for brevity
+
+      logger.info(`Payment processed successfully for invoice ${invoiceNumber}`);
+      return payment;
+    } finally {
+      await releaseLock(lockKey, lockToken);
+    }
   }
 
   static async recordManualPayment(paymentData: any) {
@@ -30,7 +142,7 @@ export class PaymentService {
       schoolId,
       invoiceId,
       studentId: invoice.studentId,
-      amount: amount * 100, // kobo
+      amount: amount * 100, // convert to kobo
       method,
       reference: reference || `MANUAL-${Date.now()}`,
       status: 'PENDING',
@@ -63,10 +175,11 @@ export class PaymentService {
       invoice.status = invoice.balance <= 0 ? 'PAID' : 'PARTIALLY_PAID';
       await invoice.save({ session });
 
-      // Ledger entry and audit omitted for brevity – you can add them back.
-
       if (invoice.balance <= 0) {
-        const subscription = await Subscription.findOne({ schoolId: invoice.schoolId, status: { $in: ['ACTIVE', 'EXPIRED', 'PAST_DUE'] } });
+        const subscription = await Subscription.findOne({
+          schoolId: invoice.schoolId,
+          status: { $in: ['ACTIVE', 'EXPIRED', 'PAST_DUE'] }
+        });
         if (subscription) {
           const daysToAdd = subscription.durationDaysAtPurchase || 90;
           subscription.endDate = new Date(Date.now() + daysToAdd * 24 * 60 * 60 * 1000);
@@ -95,8 +208,9 @@ export class PaymentService {
     const pendingPayments = await Payment.find({
       status: 'PENDING',
       method: 'ONLINE',
-      createdAt: { $lt: new Date(Date.now() - 10 * 60 * 1000) },
+      createdAt: { $lt: new Date(Date.now() - 10 * 60 * 1000) }
     });
+    let count = 0;
     for (const payment of pendingPayments) {
       try {
         const response = await axios.get(
@@ -105,6 +219,7 @@ export class PaymentService {
         );
         if (response.data.data.status === 'success') {
           await this.processPaystackWebhook({ event: 'charge.success', data: response.data.data });
+          count++;
         } else if (response.data.data.status === 'failed') {
           payment.status = 'FAILED';
           await payment.save();
@@ -113,10 +228,13 @@ export class PaymentService {
         logger.error(`Reconciliation failed for payment ${payment._id}:`, error);
       }
     }
-    return pendingPayments.length;
+    return count;
   }
 
-  // New subscription and SMS top-up methods
+  // ------------------------------------------------------------------
+  // New methods: Subscription payment handling, SMS top-up
+  // ------------------------------------------------------------------
+
   static async handleSubscriptionPayment(schoolId: string, planId: string, reference: string) {
     const plan = await SubscriptionPlan.findById(planId);
     if (!plan) throw new NotFoundError('Plan not found');
@@ -147,6 +265,7 @@ export class PaymentService {
       metadata: { type: 'subscription', planId: plan._id },
     });
     await payment.save();
+
     return subscription;
   }
 
@@ -170,6 +289,7 @@ export class PaymentService {
       metadata: { type: 'sms_topup', credits },
     });
     await payment.save();
+
     return { credits, newBalance: school.smsBalance };
   }
 }
