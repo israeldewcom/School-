@@ -32,7 +32,10 @@ export class SchoolController {
 
   static async getCurrentSchool(req: Request, res: Response, next: NextFunction) {
     try {
-      if (!req.schoolId) throw new NotFoundError('School not found');
+      if (!req.schoolId) {
+        res.status(404).json({ success: false, message: 'School not found' });
+        return;
+      }
       const school = await SchoolService.getById(req.schoolId);
       res.json({ success: true, data: school });
     } catch (error) {
@@ -60,7 +63,10 @@ export class SchoolController {
 
   static async updateCurrent(req: Request, res: Response, next: NextFunction) {
     try {
-      if (!req.schoolId) throw new NotFoundError('School not found');
+      if (!req.schoolId) {
+        res.status(404).json({ success: false, message: 'School not found' });
+        return;
+      }
       const school = await SchoolService.update(req.schoolId, req.body);
       res.json({ success: true, data: school });
     } catch (error) {
@@ -98,10 +104,11 @@ export class SchoolController {
 
       // Validate required fields
       if (!schoolName || !username || !password || !ownerName) {
-        return res.status(400).json({
+        res.status(400).json({
           success: false,
           message: 'Missing required fields: schoolName, username, password, ownerName',
         });
+        return;
       }
 
       // 1. Create school
@@ -149,7 +156,6 @@ export class SchoolController {
 
       // 4. (Optional) Load sample data – stub for now
       if (loadSample) {
-        // Placeholder for sample data generation
         logger.info('Sample data requested for school', school._id);
       }
 
