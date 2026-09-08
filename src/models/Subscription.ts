@@ -11,6 +11,9 @@ export interface ISubscription extends Document {
   priceAtPurchase: number;
   billingCycleAtPurchase: 'MONTHLY' | 'TERMLY' | 'ANNUAL';
   durationDaysAtPurchase: number;
+  // NEW trial fields
+  isTrial: boolean;
+  trialEndDate?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -35,6 +38,8 @@ const SubscriptionSchema = new Schema<ISubscription>(
       required: true,
     },
     durationDaysAtPurchase: { type: Number, required: true },
+    isTrial: { type: Boolean, default: false },
+    trialEndDate: { type: Date },
   },
   { timestamps: true }
 );
