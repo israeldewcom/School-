@@ -30,12 +30,12 @@ import { checkEntitlement } from '../middleware/entitlement.middleware';
 const router = express.Router();
 
 // ============================================================
-// 1. PUBLIC ROUTES (no authentication required)
+// 1. PUBLIC ROUTES (no authentication)
 // ============================================================
 router.use('/auth', authRoutes);
 router.use('/webhooks', webhookRoutes);
 
-// Public school endpoints (ping + onboard)
+// ✅ These must be here – BEFORE authMiddleware
 router.get('/schools/ping', SchoolController.ping);
 router.post('/schools/onboard', SchoolController.onboard);
 
@@ -44,17 +44,14 @@ router.post('/schools/onboard', SchoolController.onboard);
 // ============================================================
 router.use(authMiddleware);
 
-// Platform routes (no school context – super admin only)
+// Platform routes
 router.use('/platform', platformRoutes);
 
-// ============================================================
-// 3. SCHOOL ROUTES (require school context + active subscription)
-// ============================================================
+// School-scoped routes (require school context + active subscription)
 router.use(requireSchoolMembership);
 router.use(requireSchoolContext);
 router.use(requireActiveSubscription);
 
-// Mount all school-scoped routes (excluding public ones)
 router.use('/schools', schoolRoutes);
 router.use('/students', checkEntitlement('students'), studentRoutes);
 router.use('/parents', parentRoutes);
