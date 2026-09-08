@@ -5,7 +5,7 @@ import { SubscriptionPlan } from '../../models/SubscriptionPlan';
 import { School } from '../../models/School';
 import { NotFoundError, BadRequestError } from '../../utils/errors';
 import { acquireLock, releaseLock } from '../../config/redis';
-import { smsQueue, emailQueue, pdfQueue, automationQueue } from '../../jobs/queues';
+import { emailQueue, pdfQueue } from '../../jobs/queues';   // removed smsQueue, automationQueue
 import logger from '../../config/logger';
 import { invalidateSubscriptionCache } from '../../middleware/subscription.middleware';
 import mongoose from 'mongoose';
@@ -42,7 +42,7 @@ export class PaymentService {
 
       const metadata = data.metadata || {};
 
-      // Handle subscription payment (from Paystack checkout)
+      // Handle subscription payment
       if (metadata.type === 'subscription') {
         const { schoolId, planId } = metadata;
         if (!schoolId || !planId) throw new BadRequestError('Missing schoolId or planId in metadata');
@@ -65,7 +65,7 @@ export class PaymentService {
       const invoice = await Invoice.findOne({ invoiceNumber });
       if (!invoice) throw new NotFoundError('Invoice not found');
 
-      const paystackAmount = data.amount; // kobo
+      const paystackAmount = data.amount;
       if (paystackAmount > invoice.balance) {
         throw new BadRequestError('Payment amount exceeds invoice balance');
       }
@@ -94,8 +94,6 @@ export class PaymentService {
         invoice.status = invoice.balance <= 0 ? 'PAID' : 'PARTIALLY_PAID';
         await invoice.save({ session });
 
-        // Audit and ledger entries omitted for brevity – add if needed
-
         // Renew subscription if fully paid
         if (invoice.balance <= 0) {
           const subscription = await Subscription.findOne({
@@ -107,7 +105,7 @@ export class PaymentService {
             subscription.endDate = new Date(Date.now() + daysToAdd * 24 * 60 * 60 * 1000);
             subscription.status = 'ACTIVE';
             subscription.isTrial = false;
-            subscription.trialEndDate = null;
+            subscription.trialEndDate = undefined;   // instead of null
             await subscription.save({ session });
             await invalidateSubscriptionCache(invoice.schoolId.toString());
           }
@@ -121,10 +119,8 @@ export class PaymentService {
         session.endSession();
       }
 
-      // Queue side effects
       await pdfQueue.add('generate-receipt', { paymentId: payment._id });
       await emailQueue.add('send-payment-confirmation', { paymentId: payment._id });
-      // SMS to parent would go here; omitted for brevity
 
       logger.info(`Payment processed successfully for invoice ${invoiceNumber}`);
       return payment;
@@ -142,7 +138,7 @@ export class PaymentService {
       schoolId,
       invoiceId,
       studentId: invoice.studentId,
-      amount: amount * 100, // convert to kobo
+      amount: amount * 100,
       method,
       reference: reference || `MANUAL-${Date.now()}`,
       status: 'PENDING',
@@ -185,7 +181,7 @@ export class PaymentService {
           subscription.endDate = new Date(Date.now() + daysToAdd * 24 * 60 * 60 * 1000);
           subscription.status = 'ACTIVE';
           subscription.isTrial = false;
-          subscription.trialEndDate = null;
+          subscription.trialEndDate = undefined;
           await subscription.save({ session });
           await invalidateSubscriptionCache(invoice.schoolId.toString());
         }
@@ -232,7 +228,7 @@ export class PaymentService {
   }
 
   // ------------------------------------------------------------------
-  // New methods: Subscription payment handling, SMS top-up
+  // New methods
   // ------------------------------------------------------------------
 
   static async handleSubscriptionPayment(schoolId: string, planId: string, reference: string) {
@@ -242,7 +238,7 @@ export class PaymentService {
     if (!subscription) throw new NotFoundError('Subscription not found');
 
     subscription.isTrial = false;
-    subscription.trialEndDate = null;
+    subscription.trialEndDate = undefined;
     subscription.status = 'ACTIVE';
     subscription.planId = plan._id;
     subscription.priceAtPurchase = plan.price;
