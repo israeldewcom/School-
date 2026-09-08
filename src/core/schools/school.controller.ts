@@ -3,7 +3,6 @@ import { SchoolService } from './school.service';
 import { User } from '../../models/User';
 import { Class } from '../../models/Class';
 import { AuthService } from '../auth/auth.service';
-import { NotFoundError } from '../../utils/errors';
 import logger from '../../config/logger';
 
 export class SchoolController {
