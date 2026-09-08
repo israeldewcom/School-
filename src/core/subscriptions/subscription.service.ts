@@ -93,7 +93,7 @@ export class SubscriptionService {
         subscription.endDate = new Date(Date.now() + daysToAdd * 24 * 60 * 60 * 1000);
         subscription.status = 'ACTIVE';
         subscription.isTrial = false;
-        subscription.trialEndDate = null;
+        subscription.trialEndDate = undefined;   // instead of null
         await subscription.save({ session });
         await invalidateSubscriptionCache(subscription.schoolId.toString());
       }
