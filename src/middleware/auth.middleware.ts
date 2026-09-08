@@ -19,11 +19,16 @@ declare global {
 }
 
 export const authMiddleware = async (req: Request, _res: Response, next: NextFunction) => {
-  // ✅ Bypass authentication for public endpoints (safety net)
+  // ================================================================
+  // 🚀 BYPASS authentication for public endpoints
+  // ================================================================
   if (req.path === '/api/v1/schools/onboard' || req.path === '/api/v1/schools/ping') {
     return next();
   }
 
+  // ================================================================
+  // 🔐 Authentication for all other routes
+  // ================================================================
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
