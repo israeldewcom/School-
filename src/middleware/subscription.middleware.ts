@@ -4,7 +4,7 @@ import { ForbiddenError } from '../utils/errors';
 import logger from '../config/logger';
 import { getJSON, setJSON, del } from '../config/redis';
 
-export const requireActiveSubscription = async (req: Request, _res: Response, next: NextFunction) => {
+export const requireActiveSubscription = async (req: Request, res: Response, next: NextFunction) => {
   // Skip for super admin
   if (req.user?.role === 'SUPER_ADMIN') {
     return next();
@@ -15,42 +15,59 @@ export const requireActiveSubscription = async (req: Request, _res: Response, ne
     return next();
   }
 
-  // Whitelist manual payment endpoints to avoid deadlock
+  // Whitelist manual payment endpoints
   if (req.path.match(/^\/api\/v1\/payments\/manual$/) ||
       req.path.match(/^\/api\/v1\/payments\/[a-f0-9]{24}\/approve$/)) {
     return next();
   }
 
-  // If user is not yet authenticated, let auth middleware handle it
-  if (!req.user) {
-    return next();
-  }
+  if (!req.user) return next();
 
   const schoolId = req.schoolId;
-  if (!schoolId) {
-    return next(new ForbiddenError('School context missing'));
-  }
+  if (!schoolId) return next(new ForbiddenError('School context missing'));
 
   try {
-    // Check cache first (5-minute TTL)
     const cacheKey = `sub:status:${schoolId}`;
-    let subscription = await getJSON<{ status: string; endDate: string }>(cacheKey);
+    let subscription = await getJSON<{ status: string; endDate: string; isTrial: boolean; trialEndDate?: string }>(cacheKey);
 
     if (!subscription) {
-      const subDoc = await Subscription.findOne({ schoolId }).select('status endDate');
+      const subDoc = await Subscription.findOne({ schoolId }).select('status endDate isTrial trialEndDate');
       if (subDoc) {
-        subscription = { status: subDoc.status, endDate: subDoc.endDate.toISOString() };
-        await setJSON(cacheKey, subscription, 300); // 5 minutes
+        subscription = {
+          status: subDoc.status,
+          endDate: subDoc.endDate.toISOString(),
+          isTrial: subDoc.isTrial || false,
+          trialEndDate: subDoc.trialEndDate?.toISOString(),
+        };
+        await setJSON(cacheKey, subscription, 300);
       }
     }
 
-    if (!subscription || subscription.status !== 'ACTIVE') {
+    if (!subscription) {
+      return next(new ForbiddenError('No subscription found. Please contact support.'));
+    }
+
+    // Check trial expiry first
+    if (subscription.isTrial && subscription.trialEndDate) {
+      const trialEnd = new Date(subscription.trialEndDate);
+      if (trialEnd < new Date()) {
+        // Trial expired
+        await Subscription.updateOne({ schoolId }, { status: 'EXPIRED', isTrial: false });
+        await del(cacheKey);
+        return next(new ForbiddenError('Your free trial has expired. Please subscribe to continue.'));
+      }
+      // Trial is active – allow access, but pass days left to frontend via header
+      const daysLeft = Math.ceil((trialEnd.getTime() - Date.now()) / 86400000);
+      res.setHeader('X-Trial-Days-Left', daysLeft.toString());
+      return next();
+    }
+
+    // Normal subscription check
+    if (subscription.status !== 'ACTIVE') {
       return next(new ForbiddenError('Subscription expired or inactive. Please renew to access this feature.'));
     }
 
-    // Double-check endDate
     if (new Date(subscription.endDate) < new Date()) {
-      // Update cache and DB if expired
       await Subscription.updateOne({ schoolId }, { status: 'EXPIRED' });
       await del(cacheKey);
       return next(new ForbiddenError('Subscription expired. Please renew.'));
@@ -63,7 +80,6 @@ export const requireActiveSubscription = async (req: Request, _res: Response, ne
   }
 };
 
-// Helper to invalidate subscription cache on renewal
 export const invalidateSubscriptionCache = async (schoolId: string) => {
   await del(`sub:status:${schoolId}`);
 };
