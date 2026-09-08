@@ -18,6 +18,10 @@ export interface ISchool extends Document {
   currentTerm?: string;
   status: 'PENDING' | 'ACTIVE' | 'SUSPENDED' | 'ARCHIVED';
   subscriptionId?: string;
+  // NEW SMS fields
+  smsBalance: number; // in credits
+  smsRate: number; // cost per SMS in kobo (e.g., 2000)
+  smsMonthlyUsage: number; // used this month
   createdAt: Date;
   updatedAt: Date;
 }
@@ -45,6 +49,9 @@ const SchoolSchema = new Schema<ISchool>(
       default: 'PENDING',
     },
     subscriptionId: String,
+    smsBalance: { type: Number, default: 0 },
+    smsRate: { type: Number, default: 2000 }, // ₦20 per SMS (2000 kobo)
+    smsMonthlyUsage: { type: Number, default: 0 },
   },
   { timestamps: true }
 );
