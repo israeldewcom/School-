@@ -25,7 +25,7 @@ import staffRoutes from '../core/staff/staff.routes';
 import { authMiddleware, requireSchoolMembership, requireSchoolContext } from '../middleware/auth.middleware';
 import { requireActiveSubscription } from '../middleware/subscription.middleware';
 import { checkEntitlement } from '../middleware/entitlement.middleware';
-import { requirePermission } from '../middleware/permission.middleware';
+// removed import { requirePermission } from '../middleware/permission.middleware';
 
 const router = express.Router();
 
@@ -46,7 +46,7 @@ router.use(requireActiveSubscription);
 
 // Mount all school routes
 router.use('/schools', schoolRoutes);
-router.use('/students', checkEntitlement('students'), studentRoutes); // entitlement on all student routes (but we apply at route level in student.routes too)
+router.use('/students', checkEntitlement('students'), studentRoutes);
 router.use('/parents', parentRoutes);
 router.use('/classes', classRoutes);
 router.use('/fees', feeRoutes);
@@ -64,8 +64,6 @@ router.use('/academics', academicRoutes);
 router.use('/analytics', analyticsRoutes);
 router.use('/support', supportRoutes);
 router.use('/export', exportRoutes);
-
-// Staff routes – entitlement will be applied on POST inside staff.routes
 router.use('/staff', staffRoutes);
 
 export default router;
