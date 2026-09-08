@@ -6,7 +6,7 @@ import { sendSMS } from '../integrations/sms/termii';
 import { sendEmail } from '../integrations/email/nodemailer';
 
 const worker = new Worker('schoolflow_automations', async (job) => {
-  const { automationId, action } = job.data;
+  const { automationId, action, data } = job.data;
   const automation = await Automation.findById(automationId);
   if (!automation) {
     throw new Error(`Automation ${automationId} not found`);
@@ -14,7 +14,11 @@ const worker = new Worker('schoolflow_automations', async (job) => {
   switch (action.type) {
     case 'SMS':
       if (action.config.to && action.config.message) {
-        await sendSMS(action.config.to, action.config.message);
+        // sendSMS expects: schoolId, to, message, senderId
+        // We need to get schoolId from data; we assume it's available
+        const schoolId = data.schoolId;
+        if (!schoolId) throw new Error('No schoolId for SMS');
+        await sendSMS(schoolId, action.config.to, action.config.message, action.config.senderId);
       }
       break;
     case 'EMAIL':
@@ -23,11 +27,9 @@ const worker = new Worker('schoolflow_automations', async (job) => {
       }
       break;
     case 'IN_APP':
-      // Create in-app notification
       // ...
       break;
     case 'WEBHOOK':
-      // Call webhook
       // ...
       break;
     default:
