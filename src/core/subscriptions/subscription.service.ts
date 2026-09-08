@@ -14,13 +14,11 @@ export class SubscriptionService {
     const durationMap: Record<string, number> = { MONTHLY: 30, TERMLY: 90, ANNUAL: 365 };
     const now = new Date();
     const trialDays = 7;
-
     const subscription = new Subscription({
       ...data,
       priceAtPurchase: plan.price,
       billingCycleAtPurchase: plan.billingCycle,
       durationDaysAtPurchase: durationMap[plan.billingCycle] || 90,
-      // Trial settings
       isTrial: true,
       trialEndDate: new Date(now.getTime() + trialDays * 24 * 60 * 60 * 1000),
       endDate: new Date(now.getTime() + trialDays * 24 * 60 * 60 * 1000),
@@ -60,22 +58,19 @@ export class SubscriptionService {
     return SubscriptionPlan.find({ isActive: true });
   }
 
-  // NEW renewal methods
   static async requestRenewal(schoolId: string, data: { plan: string; amount: number; proofUrl?: string; reference: string }) {
     const subscription = await Subscription.findOne({ schoolId, status: { $in: ['ACTIVE', 'EXPIRED'] } });
     if (!subscription) throw new NotFoundError('No active subscription found');
 
     const renewal = new SubscriptionRenewal({
-      schoolId,
+      schoolId: new mongoose.Types.ObjectId(schoolId),
       subscriptionId: subscription._id,
       ...data,
       status: 'pending',
     });
     await renewal.save();
 
-    // Notify platform admin (email or in-app notification)
     await emailQueue.add('send-renewal-notification', { renewalId: renewal._id });
-
     return renewal;
   }
 
@@ -89,10 +84,9 @@ export class SubscriptionService {
     try {
       renewal.status = 'approved';
       renewal.reviewedAt = new Date();
-      renewal.reviewedBy = reviewerId;
+      renewal.reviewedBy = new mongoose.Types.ObjectId(reviewerId);
       await renewal.save({ session });
 
-      // Extend subscription
       const subscription = await Subscription.findById(renewal.subscriptionId);
       if (subscription) {
         const daysToAdd = subscription.durationDaysAtPurchase || 90;
@@ -120,7 +114,7 @@ export class SubscriptionService {
     if (renewal.status !== 'pending') throw new BadRequestError('Already reviewed');
     renewal.status = 'rejected';
     renewal.reviewedAt = new Date();
-    renewal.reviewedBy = reviewerId;
+    renewal.reviewedBy = new mongoose.Types.ObjectId(reviewerId);
     renewal.rejectionReason = reason;
     await renewal.save();
     return renewal;
