@@ -10,7 +10,7 @@ import logger from '../config/logger';
 type EntitlementResource = 'students' | 'staff' | 'storage' | 'sms';
 
 export const checkEntitlement = (resource: EntitlementResource) => {
-  return async (req: Request, res: Response, next: NextFunction) => {
+  return async (req: Request, _res: Response, next: NextFunction) => {
     try {
       const schoolId = req.schoolId;
       if (!schoolId) return next(new ForbiddenError('School context missing'));
@@ -28,9 +28,7 @@ export const checkEntitlement = (resource: EntitlementResource) => {
           const count = await Student.countDocuments({ schoolId, status: 'ACTIVE' });
           if (count >= entitlements.maxStudents) {
             return next(
-              new ForbiddenError(
-                `Student limit reached (${entitlements.maxStudents}). Please upgrade your plan.`
-              )
+              new ForbiddenError(`Student limit reached (${entitlements.maxStudents}). Please upgrade your plan.`)
             );
           }
           break;
@@ -39,15 +37,12 @@ export const checkEntitlement = (resource: EntitlementResource) => {
           const count = await Staff.countDocuments({ schoolId, isActive: true });
           if (count >= entitlements.maxStaff) {
             return next(
-              new ForbiddenError(
-                `Staff limit reached (${entitlements.maxStaff}). Please upgrade your plan.`
-              )
+              new ForbiddenError(`Staff limit reached (${entitlements.maxStaff}). Please upgrade your plan.`)
             );
           }
           break;
         }
         case 'storage': {
-          // Sum file sizes from SchoolDocument
           const result = await SchoolDocument.aggregate([
             { $match: { schoolId } },
             { $group: { _id: null, total: { $sum: '$size' } } },
@@ -56,17 +51,13 @@ export const checkEntitlement = (resource: EntitlementResource) => {
           const totalGB = totalBytes / (1024 * 1024 * 1024);
           if (totalGB >= entitlements.storageGB) {
             return next(
-              new ForbiddenError(
-                `Storage limit reached (${entitlements.storageGB} GB). Please upgrade your plan.`
-              )
+              new ForbiddenError(`Storage limit reached (${entitlements.storageGB} GB). Please upgrade your plan.`)
             );
           }
           break;
         }
         case 'sms': {
-          // We'll check monthly usage – you need to track SMS count per month in School model or separate collection.
-          // For simplicity, we track in School.smsMonthlyUsage (add field)
-          // This is just a placeholder; you need to implement usage tracking.
+          // Implement SMS usage check if needed
           break;
         }
         default:
