@@ -3,6 +3,7 @@ import { SchoolService } from './school.service';
 import { User } from '../../models/User';
 import { Class } from '../../models/Class';
 import { AuthService } from '../auth/auth.service';
+import { NotFoundError } from '../../utils/errors';
 import logger from '../../config/logger';
 
 export class SchoolController {
@@ -29,6 +30,16 @@ export class SchoolController {
     }
   }
 
+  static async getCurrentSchool(req: Request, res: Response, next: NextFunction) {
+    try {
+      if (!req.schoolId) throw new NotFoundError('School not found');
+      const school = await SchoolService.getById(req.schoolId);
+      res.json({ success: true, data: school });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   static async getSchool(req: Request, res: Response, next: NextFunction) {
     try {
       const school = await SchoolService.getById(req.params.id);
@@ -47,6 +58,16 @@ export class SchoolController {
     }
   }
 
+  static async updateCurrent(req: Request, res: Response, next: NextFunction) {
+    try {
+      if (!req.schoolId) throw new NotFoundError('School not found');
+      const school = await SchoolService.update(req.schoolId, req.body);
+      res.json({ success: true, data: school });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   static async delete(req: Request, res: Response, next: NextFunction) {
     try {
       await SchoolService.delete(req.params.id);
@@ -57,7 +78,7 @@ export class SchoolController {
   }
 
   // ------------------------------------------------------------------
-  // NEW: Onboarding endpoint (creates school, owner, classes, trial)
+  // ONBOARDING (public, no authentication)
   // ------------------------------------------------------------------
   static async onboard(req: Request, res: Response, next: NextFunction) {
     try {
@@ -75,27 +96,36 @@ export class SchoolController {
         loadSample,
       } = req.body;
 
+      // Validate required fields
+      if (!schoolName || !username || !password || !ownerName) {
+        return res.status(400).json({
+          success: false,
+          message: 'Missing required fields: schoolName, username, password, ownerName',
+        });
+      }
+
       // 1. Create school
       const school = await SchoolService.create({
         name: schoolName,
-        schoolType,
-        address,
-        phone,
-        email: `${username}@school.local`, // placeholder
+        schoolType: schoolType || 'Primary & Secondary',
+        address: address || '',
+        phone: phone || '',
+        email: `${username}@school.local`,
         country: 'Nigeria',
         state: '',
         city: '',
         currency: 'NGN',
         timezone: 'Africa/Lagos',
-        currentSession: session,
-        currentTerm: term,
+        currentSession: session || '2026/2027',
+        currentTerm: term || 'First Term',
         status: 'ACTIVE',
       });
 
       // 2. Create owner user
       const owner = new User({
         email: `${username}@school.local`,
-        password, // will be hashed by pre-save hook
+        username: username,
+        password: password,
         firstName: ownerName.split(' ')[0] || ownerName,
         lastName: ownerName.split(' ').slice(1).join(' ') || 'Owner',
         role: 'SCHOOL_OWNER',
@@ -104,30 +134,30 @@ export class SchoolController {
       });
       await owner.save();
 
-      // 3. Create classes
-      if (classes && classes.length) {
+      // 3. Create classes (if provided)
+      if (classes && Array.isArray(classes) && classes.length) {
         const classDocs = classes.map((c: any) => ({
           schoolId: school._id,
           name: c.name,
-          fee: c.fee,
-          level: 0, // default
-          academicYear: session,
+          fee: Number(c.fee) || 0,
+          level: 0,
+          academicYear: session || '2026/2027',
           isActive: true,
         }));
         await Class.insertMany(classDocs);
       }
 
-      // 4. (Optional) Load sample data – you can call a seed function here
+      // 4. (Optional) Load sample data – stub for now
       if (loadSample) {
-        // You can implement sample data seeding here
-        logger.info('Sample data loading requested for school', school._id);
+        // Placeholder for sample data generation
+        logger.info('Sample data requested for school', school._id);
       }
 
       // 5. Auto-login the owner (generate tokens)
       const loginResult = await AuthService.login(
         owner.email,
         password,
-        req.ip,
+        req.ip || req.connection.remoteAddress,
         req.headers['user-agent']
       );
 
