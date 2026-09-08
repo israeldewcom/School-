@@ -38,4 +38,26 @@ export class AttendanceController {
       res.json({ success: true, message: 'Attendance record deleted' });
     } catch (error) { next(error); }
   }
+
+  // NEW: Get attendance summary for a student
+  static async getSummary(req: Request, res: Response, next: NextFunction) {
+    try {
+      const summary = await AttendanceService.getAttendanceSummary(req.params.studentId, req.schoolId!);
+      res.json({ success: true, data: summary });
+    } catch (error) { next(error); }
+  }
+
+  // NEW: Get attendance history with date range
+  static async getHistory(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { from, to } = req.query;
+      const records = await AttendanceService.getStudentAttendance(
+        req.params.studentId,
+        req.schoolId!,
+        from ? new Date(from as string) : undefined,
+        to ? new Date(to as string) : undefined
+      );
+      res.json({ success: true, data: records });
+    } catch (error) { next(error); }
+  }
 }
