@@ -19,6 +19,11 @@ declare global {
 }
 
 export const authMiddleware = async (req: Request, _res: Response, next: NextFunction) => {
+  // ✅ Bypass authentication for public endpoints (safety net)
+  if (req.path === '/api/v1/schools/onboard' || req.path === '/api/v1/schools/ping') {
+    return next();
+  }
+
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -102,7 +107,6 @@ export const requireSchoolContext = async (req: Request, _res: Response, next: N
 
 // Refresh token theft detection and revocation
 export const revokeRefreshTokenFamily = async (userId: string, _sessionId: string): Promise<void> => {
-  // Remove all refresh tokens for this user and blacklist all associated sessions
   const user = await User.findById(userId);
   if (!user) return;
   user.refreshTokens = [];
