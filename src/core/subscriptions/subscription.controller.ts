@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { SubscriptionService } from './subscription.service';
+import { Subscription } from '../../models/Subscription';
 import { SubscriptionRenewal } from '../../models/SubscriptionRenewal';
 
 export class SubscriptionController {
@@ -39,14 +40,13 @@ export class SubscriptionController {
     } catch (error) { next(error); }
   }
 
-  static async getPlans(req: Request, res: Response, next: NextFunction) {
+  static async getPlans(_req: Request, res: Response, next: NextFunction) {
     try {
       const plans = await SubscriptionService.getPlans();
       res.json({ success: true, data: plans });
     } catch (error) { next(error); }
   }
 
-  // NEW trial status
   static async getTrialStatus(req: Request, res: Response, next: NextFunction) {
     try {
       const sub = await Subscription.findOne({ schoolId: req.schoolId });
@@ -60,7 +60,6 @@ export class SubscriptionController {
     } catch (error) { next(error); }
   }
 
-  // NEW renewal request (school owner)
   static async requestRenewal(req: Request, res: Response, next: NextFunction) {
     try {
       const { plan, amount, proofUrl, reference } = req.body;
@@ -69,8 +68,7 @@ export class SubscriptionController {
     } catch (error) { next(error); }
   }
 
-  // Platform admin endpoints (Super Admin only)
-  static async getPendingRenewals(req: Request, res: Response, next: NextFunction) {
+  static async getPendingRenewals(_req: Request, res: Response, next: NextFunction) {
     try {
       const renewals = await SubscriptionRenewal.find({ status: 'pending' }).populate('schoolId');
       res.json({ success: true, data: renewals });
