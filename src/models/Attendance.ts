@@ -8,7 +8,7 @@ export interface IAttendance extends Document {
   termId: mongoose.Types.ObjectId;
   date: Date;
   status: 'PRESENT' | 'ABSENT' | 'LATE' | 'EXCUSED';
-  remark?: string;
+  remark?: string; // NEW
   createdAt: Date;
   updatedAt: Date;
 }
@@ -26,7 +26,7 @@ const AttendanceSchema = new Schema<IAttendance>(
       enum: ['PRESENT', 'ABSENT', 'LATE', 'EXCUSED'],
       required: true,
     },
-    remark: String,
+    remark: { type: String },
   },
   { timestamps: true }
 );
