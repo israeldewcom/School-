@@ -18,10 +18,9 @@ export interface ISchool extends Document {
   currentTerm?: string;
   status: 'PENDING' | 'ACTIVE' | 'SUSPENDED' | 'ARCHIVED';
   subscriptionId?: string;
-  // NEW SMS fields
-  smsBalance: number; // in credits
-  smsRate: number; // cost per SMS in kobo (e.g., 2000)
-  smsMonthlyUsage: number; // used this month
+  smsBalance: number;
+  smsRate: number;
+  smsMonthlyUsage: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -29,16 +28,27 @@ export interface ISchool extends Document {
 const SchoolSchema = new Schema<ISchool>(
   {
     name: { type: String, required: true },
-    slug: { type: String, required: true, unique: true },
+    slug: { 
+      type: String, 
+      required: true, 
+      unique: true,
+      // Auto-generate slug from name if not provided
+      set: function(this: any, val: string) {
+        if (!val && this.name) {
+          return this.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+        }
+        return val;
+      }
+    },
     logo: String,
     motto: String,
     address: { type: String, required: true },
     phone: { type: String, required: true },
     email: { type: String, required: true, unique: true },
     website: String,
-    country: { type: String, required: true },
-    state: { type: String, required: true },
-    city: { type: String, required: true },
+    country: { type: String, default: 'Nigeria' },
+    state: { type: String, default: '' },
+    city: { type: String, default: '' },
     currency: { type: String, default: 'NGN' },
     timezone: { type: String, default: 'Africa/Lagos' },
     currentSession: String,
@@ -46,14 +56,22 @@ const SchoolSchema = new Schema<ISchool>(
     status: {
       type: String,
       enum: ['PENDING', 'ACTIVE', 'SUSPENDED', 'ARCHIVED'],
-      default: 'PENDING',
+      default: 'ACTIVE',
     },
     subscriptionId: String,
     smsBalance: { type: Number, default: 0 },
-    smsRate: { type: Number, default: 2000 }, // ₦20 per SMS (2000 kobo)
+    smsRate: { type: Number, default: 2000 },
     smsMonthlyUsage: { type: Number, default: 0 },
   },
   { timestamps: true }
 );
+
+// Pre-save hook to ensure slug is set
+SchoolSchema.pre('save', function(next) {
+  if (!this.slug && this.name) {
+    this.slug = this.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  }
+  next();
+});
 
 export const School = mongoose.model<ISchool>('School', SchoolSchema);
