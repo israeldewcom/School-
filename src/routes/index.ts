@@ -22,6 +22,7 @@ import analyticsRoutes from '../core/analytics/analytics.routes';
 import supportRoutes from '../core/support/support.routes';
 import exportRoutes from '../core/export/export.routes';
 import staffRoutes from '../core/staff/staff.routes';
+import { SchoolController } from '../core/schools/school.controller';
 import { authMiddleware, requireSchoolMembership, requireSchoolContext } from '../middleware/auth.middleware';
 import { requireActiveSubscription } from '../middleware/subscription.middleware';
 import { checkEntitlement } from '../middleware/entitlement.middleware';
@@ -29,13 +30,17 @@ import { checkEntitlement } from '../middleware/entitlement.middleware';
 const router = express.Router();
 
 // ============================================================
-// PUBLIC ROUTES (no authentication required)
+// 1. PUBLIC ROUTES (no authentication required)
 // ============================================================
 router.use('/auth', authRoutes);
 router.use('/webhooks', webhookRoutes);
 
+// Public school endpoints (ping + onboard)
+router.get('/schools/ping', SchoolController.ping);
+router.post('/schools/onboard', SchoolController.onboard);
+
 // ============================================================
-// PROTECTED ROUTES (authentication required)
+// 2. PROTECTED ROUTES (authentication required)
 // ============================================================
 router.use(authMiddleware);
 
@@ -43,13 +48,13 @@ router.use(authMiddleware);
 router.use('/platform', platformRoutes);
 
 // ============================================================
-// SCHOOL ROUTES (require school context + active subscription)
+// 3. SCHOOL ROUTES (require school context + active subscription)
 // ============================================================
 router.use(requireSchoolMembership);
 router.use(requireSchoolContext);
 router.use(requireActiveSubscription);
 
-// Mount all school-scoped routes
+// Mount all school-scoped routes (excluding public ones)
 router.use('/schools', schoolRoutes);
 router.use('/students', checkEntitlement('students'), studentRoutes);
 router.use('/parents', parentRoutes);
