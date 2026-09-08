@@ -23,6 +23,7 @@ import supportRoutes from '../core/support/support.routes';
 import exportRoutes from '../core/export/export.routes';
 import { authMiddleware, requireSchoolMembership, requireSchoolContext } from '../middleware/auth.middleware';
 import { requireActiveSubscription } from '../middleware/subscription.middleware';
+import { checkEntitlement } from '../middleware/entitlement.middleware';
 
 const router = express.Router();
 
@@ -39,12 +40,15 @@ router.use('/platform', platformRoutes);
 // Routes requiring school context
 router.use(requireSchoolMembership);
 router.use(requireSchoolContext);
-
-// Apply subscription middleware for all school routes except whitelisted endpoints (handled inside middleware)
 router.use(requireActiveSubscription);
 
+// Apply entitlement checks to creation routes
+router.use('/students', checkEntitlement('students'), studentRoutes);
+router.use('/staff', checkEntitlement('staff'), requirePermission('staff', 'write'), (req, res, next) => { /* handled in route */ });
+// For staff, we need to apply entitlement at the POST route level; we'll handle in individual routes.
+
+// All other routes
 router.use('/schools', schoolRoutes);
-router.use('/students', studentRoutes);
 router.use('/parents', parentRoutes);
 router.use('/classes', classRoutes);
 router.use('/fees', feeRoutes);
