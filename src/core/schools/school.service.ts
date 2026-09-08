@@ -10,7 +10,7 @@ export class SchoolService {
     const school = new School(data);
     await school.save();
 
-    // --- Auto-create trial subscription ---
+    // Auto-create trial subscription
     try {
       const starterPlan = await SubscriptionPlan.findOne({ name: 'Starter' });
       if (starterPlan) {
@@ -43,10 +43,8 @@ export class SchoolService {
       }
     } catch (error) {
       logger.error('Failed to create trial subscription:', error);
-      // Do not block school creation; log error and continue
     }
 
-    // Audit log
     await AuditLog.create({
       actor: 'system',
       action: 'school.created',
