@@ -32,14 +32,36 @@ const app = express();
 // Connect to DB (done in server.ts, but keep this for fallback)
 connectDB();
 
-// Security middleware
-app.use(helmet());
-app.use(cors({
-  origin: env.CORS_ORIGIN ? env.CORS_ORIGIN.split(',') : '*',
-  credentials: true,
-}));
+// ================================================================
+// ✅ CORS CONFIGURATION – Allow all origins (development friendly)
+// ================================================================
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow requests with no origin (like mobile apps or curl)
+      if (!origin) return callback(null, true);
+      // If CORS_ORIGIN is set, only allow those; otherwise allow all
+      if (env.CORS_ORIGIN) {
+        const allowed = env.CORS_ORIGIN.split(',').map(o => o.trim());
+        if (allowed.includes('*') || allowed.includes(origin)) {
+          callback(null, true);
+        } else {
+          callback(new Error('Not allowed by CORS'));
+        }
+      } else {
+        // Default: allow all origins
+        callback(null, true);
+      }
+    },
+    credentials: false, // ⚠️ Do not set credentials: true when using origin: *
+    // For production, set credentials: true and specify allowed origins
+  })
+);
 
-// Prometheus metrics
+// ================================================================
+// SECURITY & MIDDLEWARE
+// ================================================================
+app.use(helmet());
 app.use(metricsMiddleware);
 app.get('/metrics', metricsEndpoint);
 
@@ -57,7 +79,6 @@ app.use(globalLimiter);
 app.get('/health', async (_req, res) => {
   let redisOk = false;
   try {
-    // Ping Redis with a timeout of 2 seconds
     await Promise.race([
       redis.ping(),
       new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000))
