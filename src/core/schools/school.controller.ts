@@ -4,8 +4,13 @@ import { User } from '../../models/User';
 import { Class } from '../../models/Class';
 import { AuthService } from '../auth/auth.service';
 import logger from '../../config/logger';
+import mongoose from 'mongoose';
 
 export class SchoolController {
+  static async ping(_req: Request, res: Response) {
+    res.json({ success: true, message: 'Server is reachable' });
+  }
+
   static async create(req: Request, res: Response, next: NextFunction) {
     try {
       const school = await SchoolService.create(req.body);
@@ -101,11 +106,25 @@ export class SchoolController {
         loadSample,
       } = req.body;
 
+      logger.info('Onboarding request received:', { schoolName, username, ownerName });
+
       // Validate required fields
       if (!schoolName || !username || !password || !ownerName) {
+        logger.warn('Missing required fields:', { schoolName, username, password, ownerName });
         res.status(400).json({
           success: false,
           message: 'Missing required fields: schoolName, username, password, ownerName',
+        });
+        return;
+      }
+
+      // Check for existing user with same username
+      const existingUser = await User.findOne({ username });
+      if (existingUser) {
+        logger.warn('Username already taken:', username);
+        res.status(409).json({
+          success: false,
+          message: 'Username already taken. Please choose another.',
         });
         return;
       }
@@ -127,6 +146,8 @@ export class SchoolController {
         status: 'ACTIVE',
       });
 
+      logger.info('School created:', school._id);
+
       // 2. Create owner user
       const owner = new User({
         email: `${username}@school.local`,
@@ -139,6 +160,7 @@ export class SchoolController {
         isActive: true,
       });
       await owner.save();
+      logger.info('Owner created:', owner._id);
 
       // 3. Create classes (if provided)
       if (classes && Array.isArray(classes) && classes.length) {
@@ -151,11 +173,13 @@ export class SchoolController {
           isActive: true,
         }));
         await Class.insertMany(classDocs);
+        logger.info(`Created ${classDocs.length} classes`);
       }
 
       // 4. (Optional) Load sample data – stub for now
       if (loadSample) {
         logger.info('Sample data requested for school', school._id);
+        // You can implement sample data seeding here
       }
 
       // 5. Auto-login the owner (generate tokens)
@@ -177,8 +201,14 @@ export class SchoolController {
         },
       });
     } catch (error) {
-      logger.error('Onboarding failed:', error);
-      next(error);
+      // Log the full error stack
+      logger.error('Onboarding error:', error);
+      // Send a detailed error response for debugging
+      res.status(500).json({
+        success: false,
+        message: error instanceof Error ? error.message : 'Internal server error',
+        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
+      });
     }
   }
 }
