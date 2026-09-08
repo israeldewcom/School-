@@ -4,6 +4,10 @@ import { requirePermission } from '../../middleware/permission.middleware';
 
 const router = express.Router();
 
+// Public onboarding (no authentication)
+router.post('/onboard', SchoolController.onboard);
+
+// Protected routes (require authentication and permissions)
 router.get('/', requirePermission('school', 'read'), SchoolController.getSchools);
 router.get('/:id', requirePermission('school', 'read'), SchoolController.getSchool);
 router.post('/', requirePermission('school', 'write'), SchoolController.create);
