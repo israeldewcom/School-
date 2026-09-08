@@ -2,7 +2,7 @@ import mongoose, { Schema, Document } from 'mongoose';
 
 export interface ISchool extends Document {
   name: string;
-  slug: string;
+  slug?: string;   // now optional
   logo?: string;
   motto?: string;
   address: string;
@@ -28,17 +28,10 @@ export interface ISchool extends Document {
 const SchoolSchema = new Schema<ISchool>(
   {
     name: { type: String, required: true },
-    slug: { 
-      type: String, 
-      required: true, 
+    slug: {
+      type: String,
       unique: true,
-      // Auto-generate slug from name if not provided
-      set: function(this: any, val: string) {
-        if (!val && this.name) {
-          return this.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-        }
-        return val;
-      }
+      // Not required – auto‑generated in pre‑save
     },
     logo: String,
     motto: String,
@@ -66,7 +59,7 @@ const SchoolSchema = new Schema<ISchool>(
   { timestamps: true }
 );
 
-// Pre-save hook to ensure slug is set
+// Auto‑generate slug if not provided
 SchoolSchema.pre('save', function(next) {
   if (!this.slug && this.name) {
     this.slug = this.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
