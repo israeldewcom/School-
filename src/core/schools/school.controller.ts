@@ -87,9 +87,9 @@ export class SchoolController {
   }
 
   // ------------------------------------------------------------------
-  // ONBOARDING (public, no authentication)
+  // ONBOARDING (public, no authentication) – no `next` parameter
   // ------------------------------------------------------------------
-  static async onboard(req: Request, res: Response, next: NextFunction) {
+  static async onboard(req: Request, res: Response) {
     try {
       const {
         schoolName,
