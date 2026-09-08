@@ -4,10 +4,7 @@ import { requirePermission } from '../../middleware/permission.middleware';
 
 const router = express.Router();
 
-// PUBLIC: Onboarding (no authentication)
-router.post('/onboard', SchoolController.onboard);
-
-// PROTECTED: All other school endpoints require authentication
+// All routes here are protected by the parent index.ts middleware
 router.get('/', requirePermission('school', 'read'), SchoolController.getSchools);
 router.get('/current', requirePermission('school', 'read'), SchoolController.getCurrentSchool);
 router.get('/:id', requirePermission('school', 'read'), SchoolController.getSchool);
