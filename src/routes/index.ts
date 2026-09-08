@@ -25,30 +25,36 @@ import staffRoutes from '../core/staff/staff.routes';
 import { authMiddleware, requireSchoolMembership, requireSchoolContext } from '../middleware/auth.middleware';
 import { requireActiveSubscription } from '../middleware/subscription.middleware';
 import { checkEntitlement } from '../middleware/entitlement.middleware';
-// removed import { requirePermission } from '../middleware/permission.middleware';
 
 const router = express.Router();
 
-// Public
+// ============================================================
+// PUBLIC ROUTES (no authentication required)
+// ============================================================
 router.use('/auth', authRoutes);
 router.use('/webhooks', webhookRoutes);
 
-// Protected
+// ============================================================
+// PROTECTED ROUTES (authentication required)
+// ============================================================
 router.use(authMiddleware);
 
-// Platform routes (no school context)
+// Platform routes (no school context – super admin only)
 router.use('/platform', platformRoutes);
 
-// Routes requiring school context
+// ============================================================
+// SCHOOL ROUTES (require school context + active subscription)
+// ============================================================
 router.use(requireSchoolMembership);
 router.use(requireSchoolContext);
 router.use(requireActiveSubscription);
 
-// Mount all school routes
+// Mount all school-scoped routes
 router.use('/schools', schoolRoutes);
 router.use('/students', checkEntitlement('students'), studentRoutes);
 router.use('/parents', parentRoutes);
 router.use('/classes', classRoutes);
+router.use('/staff', staffRoutes);
 router.use('/fees', feeRoutes);
 router.use('/invoices', invoiceRoutes);
 router.use('/payments', paymentRoutes);
@@ -64,6 +70,5 @@ router.use('/academics', academicRoutes);
 router.use('/analytics', analyticsRoutes);
 router.use('/support', supportRoutes);
 router.use('/export', exportRoutes);
-router.use('/staff', staffRoutes);
 
 export default router;
