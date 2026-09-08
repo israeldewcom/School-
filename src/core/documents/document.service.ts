@@ -1,10 +1,9 @@
 import { SchoolDocument } from '../../models/Document';
-import { NotFoundError, BadRequestError } from '../../utils/errors';
+import { NotFoundError } from '../../utils/errors';
 import { cloudinary } from '../../integrations/storage/cloudinary';
 
 export class DocumentService {
   static async create(data: any, file: any) {
-    // Upload to Cloudinary
     const result = await cloudinary.uploader.upload(file.path, {
       folder: `schools/${data.schoolId}/documents`,
     });
@@ -33,18 +32,14 @@ export class DocumentService {
   static async delete(id: string, schoolId: string) {
     const doc = await SchoolDocument.findOneAndDelete({ _id: id, schoolId });
     if (!doc) throw new NotFoundError('Document not found');
-    // Optionally delete from Cloudinary
     return doc;
   }
 
-  // NEW template methods
   static async setActiveTemplate(schoolId: string, docId: string, type: 'report_card' | 'receipt') {
-    // Deactivate all templates of same type
     await SchoolDocument.updateMany(
       { schoolId, templateType: type, isActiveTemplate: true },
       { isActiveTemplate: false }
     );
-    // Activate chosen one
     const doc = await SchoolDocument.findOneAndUpdate(
       { _id: docId, schoolId, templateType: type },
       { isActiveTemplate: true },
