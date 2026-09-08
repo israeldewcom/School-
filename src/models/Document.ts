@@ -10,6 +10,9 @@ export interface ISchoolDocument extends mongoose.Document {
   uploadedBy: mongoose.Types.ObjectId;
   tags: string[];
   isPublic: boolean;
+  // NEW template fields
+  templateType?: 'report_card' | 'receipt' | null;
+  isActiveTemplate: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -25,6 +28,12 @@ const DocumentSchema = new Schema<ISchoolDocument>(
     uploadedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     tags: [String],
     isPublic: { type: Boolean, default: false },
+    templateType: {
+      type: String,
+      enum: ['report_card', 'receipt', null],
+      default: null,
+    },
+    isActiveTemplate: { type: Boolean, default: false },
   },
   { timestamps: true }
 );
