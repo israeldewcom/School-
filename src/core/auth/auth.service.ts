@@ -8,8 +8,8 @@ import { UnauthorizedError } from '../../utils/errors';
 import logger from '../../config/logger';
 
 export class AuthService {
-  static async login(email: string, password: string, ip?: string, userAgent?: string) {
-    const user = await User.findOne({ email }).select('+password');
+  static async login(username: string, password: string, ip?: string, userAgent?: string) {
+    const user = await User.findOne({ username }).select('+password');
     if (!user) {
       throw new UnauthorizedError('Invalid credentials');
     }
