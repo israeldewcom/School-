@@ -4,10 +4,10 @@ import { AuthService } from './auth.service';
 export class AuthController {
   static async login(req: Request, res: Response, next: NextFunction) {
     try {
-      const { email, password } = req.body;
+      const { username, password } = req.body;
       const ip = req.ip || req.connection.remoteAddress;
       const userAgent = req.headers['user-agent'];
-      const result = await AuthService.login(email, password, ip, userAgent);
+      const result = await AuthService.login(username, password, ip, userAgent);
       res.json({ success: true, data: result });
     } catch (error) {
       next(error);
