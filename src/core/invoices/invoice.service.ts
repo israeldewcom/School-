@@ -4,7 +4,7 @@ import { FeeStructure } from '../../models/FeeStructure';
 import { NotFoundError, BadRequestError } from '../../utils/errors';
 import { emailQueue } from '../../jobs/queues';
 import { v4 as uuidv4 } from 'uuid';
-import { setIdempotency, getIdempotency } from '../../config/redis';
+import { setIdempotency, getIdempotency } from '../../config/mongoStore';
 
 export class InvoiceService {
   static async generateInvoice(data: { studentId: string; sessionId: string; termId: string; dueDate: Date, idempotencyKey?: string }) {
