@@ -72,13 +72,37 @@ const getRedisClient = (): Redis => {
 
 export const redis = getRedisClient();
 
-// Wrappers that silently fail if Redis is down
+// How long we're willing to wait on any single Redis operation before
+// treating it as failed and falling back. Redis calls back sessions/locks/
+// idempotency — none of them should ever be allowed to hang a user-facing
+// request, so this timeout is intentionally short.
+const REDIS_OP_TIMEOUT_MS = 1500;
+
+// Wrappers that silently fail if Redis is down OR degraded.
+//
+// IMPORTANT: checking `redis.status` alone is not enough. ioredis only
+// reports 'end' or 'close' once it has fully given up. While Redis is
+// merely unreachable or slow, the client sits in 'connecting' or
+// 'reconnecting' — and because this client is configured with
+// `maxRetriesPerRequest: null`, commands issued in that state are queued
+// and retried forever rather than rejected. Without a timeout here, that
+// means `await fn()` can hang indefinitely, taking the caller's HTTP
+// request down with it (this is what caused login/onboarding to spin
+// forever instead of failing when Redis was degraded).
+//
+// Racing every call against a short timeout guarantees safeRedis always
+// settles quickly, no matter what ioredis is doing internally.
 const safeRedis = async <T>(fn: () => Promise<T>, fallback: T): Promise<T> => {
   if (!redis.status || redis.status === 'end' || redis.status === 'close') {
     return fallback;
   }
   try {
-    return await fn();
+    return await Promise.race([
+      fn(),
+      new Promise<T>((resolve) => {
+        setTimeout(() => resolve(fallback), REDIS_OP_TIMEOUT_MS);
+      }),
+    ]);
   } catch (_) {
     return fallback;
   }
@@ -137,3 +161,10 @@ export const setIdempotency = async (key: string, result: any, ttl?: number): Pr
 export const getIdempotency = async <T>(key: string): Promise<T | null> => {
   return getJSON<T>(`idempotency:${key}`);
 };
+
+// General-purpose safe wrapper for any raw ioredis command (sadd, smembers,
+// srem, set, etc.) not already covered by the helpers above. Use this
+// instead of calling methods on the exported `redis` client directly,
+// so every Redis touchpoint gets the same timeout-and-fallback protection.
+// Example: `await safeRedisCall(() => redis.sadd(key, val), null)`
+export const safeRedisCall = safeRedis;
