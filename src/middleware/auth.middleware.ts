@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { User } from '../models/User';
-import { redis, getJSON, del } from '../config/redis';
+import { redis, getJSON, del, safeRedisCall } from '../config/redis';
 import { env } from '../config/env';
 import { UnauthorizedError, ForbiddenError } from '../utils/errors';
 import logger from '../config/logger';
@@ -41,7 +41,7 @@ export const authMiddleware = async (req: Request, _res: Response, next: NextFun
     const decoded = jwt.verify(token, env.JWT_ACCESS_SECRET) as { userId: string; jti: string };
     req.sessionId = decoded.jti;
 
-    const blacklisted = await redis.get(`blacklist:${token}`);
+    const blacklisted = await safeRedisCall(() => redis.get(`blacklist:${token}`), null);
     if (blacklisted) {
       throw new UnauthorizedError('Token revoked');
     }
@@ -117,10 +117,10 @@ export const revokeRefreshTokenFamily = async (userId: string, _sessionId: strin
   user.refreshTokens = [];
   await user.save();
 
-  const sessionIds = await redis.smembers(`user:sessions:${userId}`);
+  const sessionIds = await safeRedisCall(() => redis.smembers(`user:sessions:${userId}`), [] as string[]);
   for (const sid of sessionIds) {
     await del(`session:${sid}`);
   }
-  await redis.del(`user:sessions:${userId}`);
+  await safeRedisCall(() => redis.del(`user:sessions:${userId}`), 0);
   logger.warn(`Revoked all sessions for user ${userId} due to possible token theft`);
 };
