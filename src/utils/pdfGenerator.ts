@@ -1,5 +1,4 @@
 import PDFDocument from 'pdfkit';
-import { Readable } from 'stream';
 
 // ============================================================================
 // Real PDF generation, replacing the pdf.worker.ts stub that returned a fake
