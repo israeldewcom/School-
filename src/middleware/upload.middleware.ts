@@ -39,11 +39,19 @@ const fileFilter = (_req: any, file: any, cb: any) => {
   }
 };
 
-export const upload = multer({
+const multerInstance = multer({
   storage,
   fileFilter,
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
-}).single('file');
+});
+
+// Original export, unchanged in behavior — used by /documents.
+export const upload = multerInstance.single('file');
+
+// New: reusable single-file middleware for any route that needs an upload
+// under a differently-named field, e.g. proof-of-payment on manual payments.
+// Usage: uploadField('proof') → expects multipart field name "proof".
+export const uploadField = (fieldName: string) => multerInstance.single(fieldName);
 
 // Middleware to validate actual file content after upload
 export const validateFileContent = (req: Request, _res: Response, next: NextFunction) => {
