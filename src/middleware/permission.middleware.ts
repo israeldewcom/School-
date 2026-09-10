@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { ForbiddenError } from '../utils/errors';
 import { Permission } from '../models/Permission';
-import { getJSON, setJSON } from '../config/redis';
+import { getJSON, setJSON } from '../config/mongoStore';
 
 export const requirePermission = (resource: string, action: string) => {
   return async (req: Request, _res: Response, next: NextFunction) => {
