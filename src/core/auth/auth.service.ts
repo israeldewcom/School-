@@ -1,8 +1,8 @@
-  import jwt from 'jsonwebtoken';
+import jwt from 'jsonwebtoken';
 import { randomBytes } from 'crypto';
 import { User } from '../../models/User';
 import { School } from '../../models/School';
-import { redis, setJSON, del, safeRedisCall } from '../../config/redis';
+import { setSession, deleteSession, deleteAllUserSessions } from '../../config/mongoStore';
 import { env } from '../../config/env';
 import { UnauthorizedError } from '../../utils/errors';
 import logger from '../../config/logger';
@@ -44,15 +44,13 @@ export class AuthService {
     user.lastLogin = new Date();
     await user.save();
 
-    await setJSON(`session:${sessionId}`, {
+    await setSession(sessionId, {
       userId: user._id.toString(),
       schoolId,
       ip,
       userAgent,
       createdAt: new Date().toISOString(),
     }, 60 * 60 * 24 * 7);
-
-    await safeRedisCall(() => redis.sadd(`user:sessions:${user._id}`, sessionId), null);
 
     logger.info(`User ${user.email} logged in (session ${sessionId})`);
 
@@ -102,7 +100,7 @@ export class AuthService {
 
     // Update session TTL
     const schoolId = user.schoolId?.toString();
-    await setJSON(`session:${sessionId}`, {
+    await setSession(sessionId, {
       userId: user._id.toString(),
       schoolId,
     }, 60 * 60 * 24 * 7);
@@ -121,13 +119,13 @@ export class AuthService {
     user.refreshTokens = user.refreshTokens.filter((t) => t !== refreshHash);
     await user.save();
 
-    await safeRedisCall(() => redis.set(`blacklist:${accessToken}`, 'true', 'EX', 60 * 15), null);
-
+    // Deleting the session doc is sufficient revocation: authMiddleware's
+    // getSession lookup will fail for this token from now on, same effect
+    // the old Redis blacklist entry had (just without a separate TTL'd key).
     try {
       const decoded = jwt.verify(accessToken, env.JWT_ACCESS_SECRET) as any;
       if (decoded.jti) {
-        await del(`session:${decoded.jti}`);
-        await safeRedisCall(() => redis.srem(`user:sessions:${userId}`, decoded.jti), null);
+        await deleteSession(decoded.jti);
       }
     } catch (e) {
       // ignore
@@ -142,11 +140,7 @@ export class AuthService {
     user.refreshTokens = [];
     await user.save();
 
-    const sessionIds = await safeRedisCall(() => redis.smembers(`user:sessions:${userId}`), [] as string[]);
-    for (const sid of sessionIds) {
-      await del(`session:${sid}`);
-    }
-    await safeRedisCall(() => redis.del(`user:sessions:${userId}`), 0);
+    await deleteAllUserSessions(userId);
 
     logger.info(`User ${user.email} logged out from all devices`);
   }
@@ -178,11 +172,7 @@ export class AuthService {
       user.refreshTokens = [];
       await user.save();
     }
-    const sessionIds = await safeRedisCall(() => redis.smembers(`user:sessions:${userId}`), [] as string[]);
-    for (const sid of sessionIds) {
-      await del(`session:${sid}`);
-    }
-    await safeRedisCall(() => redis.del(`user:sessions:${userId}`), 0);
+    await deleteAllUserSessions(userId);
     logger.warn(`Revoked all sessions for user ${userId} due to possible token theft`);
   }
 }
