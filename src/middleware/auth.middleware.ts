@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { User } from '../models/User';
-import { redis, getJSON, del, safeRedisCall } from '../config/redis';
+import { getSession, deleteAllUserSessions } from '../config/mongoStore';
 import { env } from '../config/env';
 import { UnauthorizedError, ForbiddenError } from '../utils/errors';
 import logger from '../config/logger';
@@ -41,12 +41,10 @@ export const authMiddleware = async (req: Request, _res: Response, next: NextFun
     const decoded = jwt.verify(token, env.JWT_ACCESS_SECRET) as { userId: string; jti: string };
     req.sessionId = decoded.jti;
 
-    const blacklisted = await safeRedisCall(() => redis.get(`blacklist:${token}`), null);
-    if (blacklisted) {
-      throw new UnauthorizedError('Token revoked');
-    }
-
-    const sessionData = await getJSON<{ userId: string; schoolId?: string }>(`session:${decoded.jti}`);
+    // Session doc doubles as the revocation check: logout deletes it, so a
+    // missing session means either "genuinely expired" or "revoked at
+    // logout" — both correctly result in rejecting the token here.
+    const sessionData = await getSession(decoded.jti);
     if (!sessionData) {
       throw new UnauthorizedError('Session expired');
     }
@@ -117,10 +115,6 @@ export const revokeRefreshTokenFamily = async (userId: string, _sessionId: strin
   user.refreshTokens = [];
   await user.save();
 
-  const sessionIds = await safeRedisCall(() => redis.smembers(`user:sessions:${userId}`), [] as string[]);
-  for (const sid of sessionIds) {
-    await del(`session:${sid}`);
-  }
-  await safeRedisCall(() => redis.del(`user:sessions:${userId}`), 0);
+  await deleteAllUserSessions(userId);
   logger.warn(`Revoked all sessions for user ${userId} due to possible token theft`);
 };
