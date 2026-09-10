@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import { getIdempotency, setIdempotency } from '../config/redis';
+import { getIdempotency, setIdempotency } from '../config/mongoStore';
 import { BadRequestError } from '../utils/errors';
 
 export const idempotencyMiddleware = (keyPrefix: string) => {
