@@ -42,4 +42,34 @@ export class PaymentController {
       res.json({ success: true, data: payment });
     } catch (error) { next(error); }
   }
+
+  // ------------------------------------------------------------------
+  // Whole-school receipt batch endpoints
+  // ------------------------------------------------------------------
+
+  // Kicks off background generation. Returns 202 + batchId immediately.
+  static async generateReceiptsForSchool(req: Request, res: Response, next: NextFunction) {
+    try {
+      const batch = await PaymentService.generateReceiptsForSchool(req.schoolId!, req.userId!);
+      res.status(202).json({ success: true, data: batch });
+    } catch (error) { next(error); }
+  }
+
+  // Polled by the frontend for a progress bar (processedCount / totalCount).
+  static async getReceiptBatch(req: Request, res: Response, next: NextFunction) {
+    try {
+      const batch = await PaymentService.getReceiptBatch(req.params.batchId, req.schoolId!);
+      res.json({ success: true, data: batch });
+    } catch (error) { next(error); }
+  }
+
+  // Returns one merged PDF of every receipt in the batch, ready to print.
+  static async printReceiptBatch(req: Request, res: Response, next: NextFunction) {
+    try {
+      const pdfBuffer = await PaymentService.printReceiptBatch(req.params.batchId, req.schoolId!);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="receipts-batch-${req.params.batchId}.pdf"`);
+      res.send(pdfBuffer);
+    } catch (error) { next(error); }
+  }
 }
