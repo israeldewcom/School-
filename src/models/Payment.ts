@@ -12,6 +12,8 @@ export interface IPayment extends Document {
   receivedBy?: mongoose.Types.ObjectId;
   confirmedAt?: Date;
   metadata?: any;
+  proofUrl?: string;
+  receiptUrl?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -37,6 +39,12 @@ const PaymentSchema = new Schema<IPayment>(
     receivedBy: { type: Schema.Types.ObjectId, ref: 'User' },
     confirmedAt: Date,
     metadata: Schema.Types.Mixed,
+    // Uploaded by the parent/payer when submitting a manual (bank transfer,
+    // cash, POS) payment for admin review — a screenshot or PDF of the
+    // transfer receipt/slip.
+    proofUrl: String,
+    // Populated once the receipt PDF is generated after confirmation.
+    receiptUrl: String,
   },
   { timestamps: true }
 );
