@@ -182,7 +182,7 @@ export class SchoolController {
 
       // 5. Auto-login the owner (generate tokens)
       const loginResult = await AuthService.login(
-        owner.email,
+        owner.username,
         password,
         req.ip || req.connection.remoteAddress,
         req.headers['user-agent']
