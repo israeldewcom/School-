@@ -25,3 +25,6 @@ export * from './Subscription';
 export * from './SubscriptionPlan';
 export * from './AuditLog';
 export * from './Permission';
+export * from './AuthSession';
+export * from './IdempotencyKey';
+export * from './DistributedLock';
