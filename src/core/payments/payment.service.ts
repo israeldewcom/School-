@@ -4,7 +4,7 @@ import { Subscription } from '../../models/Subscription';
 import { SubscriptionPlan } from '../../models/SubscriptionPlan';
 import { School } from '../../models/School';
 import { NotFoundError, BadRequestError } from '../../utils/errors';
-import { acquireLock, releaseLock } from '../../config/redis';
+import { acquireLock, releaseLock } from '../../config/mongoStore';
 import { emailQueue, pdfQueue } from '../../jobs/queues';   // removed smsQueue, automationQueue
 import logger from '../../config/logger';
 import { invalidateSubscriptionCache } from '../../middleware/subscription.middleware';
