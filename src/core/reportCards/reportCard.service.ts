@@ -294,7 +294,7 @@ export class ReportCardService {
   }
 
   // Bulk-publish every GENERATED report card in a batch after admin review.
-  static async publishBatch(batchId: string, schoolId: string, publishedBy: string) {
+  static async publishBatch(batchId: string, schoolId: string, _publishedBy: string) {
     const batch = await BatchJob.findOne({ _id: batchId, schoolId, type: 'REPORT_CARDS' });
     if (!batch) throw new NotFoundError('Batch not found');
     if (batch.status !== 'COMPLETED') {
