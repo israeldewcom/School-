@@ -2,7 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { Subscription } from '../models/Subscription';
 import { ForbiddenError } from '../utils/errors';
 import logger from '../config/logger';
-import { getJSON, setJSON, del } from '../config/redis';
+import { getJSON, setJSON, del } from '../config/mongoStore';
 
 export const requireActiveSubscription = async (req: Request, res: Response, next: NextFunction) => {
   // Skip for super admin
