@@ -8,6 +8,7 @@ import { acquireLock, releaseLock } from '../../config/mongoStore';
 import { emailQueue, pdfQueue } from '../../jobs/queues';   // removed smsQueue, automationQueue
 import logger from '../../config/logger';
 import { invalidateSubscriptionCache } from '../../middleware/subscription.middleware';
+import { cloudinary } from '../../integrations/storage/cloudinary';
 import mongoose from 'mongoose';
 import axios from 'axios';
 import { env } from '../../config/env';
@@ -130,9 +131,18 @@ export class PaymentService {
   }
 
   static async recordManualPayment(paymentData: any) {
-    const { schoolId, invoiceId, amount, method, receivedBy, reference } = paymentData;
+    const { schoolId, invoiceId, amount, method, receivedBy, reference, proofFile } = paymentData;
     const invoice = await Invoice.findById(invoiceId);
     if (!invoice) throw new NotFoundError('Invoice not found');
+
+    let proofUrl: string | undefined;
+    if (proofFile) {
+      const uploadResult = await cloudinary.uploader.upload(proofFile.path, {
+        folder: `schools/${schoolId}/payment-proofs`,
+        resource_type: 'auto',
+      });
+      proofUrl = uploadResult.secure_url;
+    }
 
     const payment = new Payment({
       schoolId,
@@ -143,6 +153,7 @@ export class PaymentService {
       reference: reference || `MANUAL-${Date.now()}`,
       status: 'PENDING',
       receivedBy,
+      proofUrl,
     });
     await payment.save();
     await emailQueue.add('send-payment-approval-request', { paymentId: payment._id });
