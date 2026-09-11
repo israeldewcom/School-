@@ -9,4 +9,7 @@ router.get('/messages', requirePermission('communications', 'read'), Communicati
 router.get('/notifications', requirePermission('communications', 'read'), CommunicationController.getNotifications);
 router.put('/notifications/:id/read', requirePermission('communications', 'write'), CommunicationController.markRead);
 
+// Direct parent SMS
+router.post('/sms-to-parent', requirePermission('communications', 'write'), CommunicationController.sendParentSMS);
+
 export default router;
