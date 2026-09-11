@@ -6,12 +6,20 @@ import { smsQueue, emailQueue } from '../../jobs/queues';
 import { NotFoundError, BadRequestError } from '../../utils/errors';
 
 export class CommunicationService {
+  // ============================================================
+  // BULK / GENERIC MESSAGING
+  // ============================================================
+  // Called by POST /communications/messages. Recipients are User ObjectIds
+  // (school staff, other admins). For parent-facing SMS, use sendParentSMS
+  // below — the Parent model has a phone field, User does not.
   static async sendMessage(data: any) {
     const message = new Message(data);
     message.status = 'SENT';
     await message.save();
 
-    // Look up recipients — they may be User IDs, but we also need phone/email.
+    // Resolve the User documents so we can read email off them. The Message
+    // document already stores the raw ObjectIds; here we need the actual
+    // email strings to enqueue the email jobs.
     const recipients = await User.find({ _id: { $in: data.recipients || [] } });
 
     for (const recipient of recipients) {
@@ -21,53 +29,50 @@ export class CommunicationService {
           subject: data.subject,
           html: data.body,
         });
-      } else if (data.type === 'SMS') {
-        // User model doesn't have a phone field today; fall back to nothing.
-        // Prefer sendParentSMS for SMS.
-        continue;
       }
+      // SMS for Users isn't wired here because the User model has no phone
+      // field. Use sendParentSMS for parent-facing SMS.
     }
 
     return message;
   }
 
-  // Send an SMS to a Parent record. Parent has phone directly, so we don't
-  // need a User lookup. Queues through the same schoolflow_sms worker.
+  // ============================================================
+  // PARENT SMS
+  // ============================================================
+  // Called by POST /communications/sms-to-parent. The Parent model has a
+  // phone field directly, so no User lookup is needed. The schoolflow_sms
+  // worker picks the job up and calls the Termii integration, deducting
+  // credits from the school's SMS balance.
   static async sendParentSMS(schoolId: string, parentId: string, message: string) {
     const parent = await Parent.findOne({ _id: parentId, schoolId });
     if (!parent) throw new NotFoundError('Parent not found');
     if (!parent.phone) throw new BadRequestError('This parent has no phone number on file');
     if (!message || !message.trim()) throw new BadRequestError('Message is required');
 
-    // Record the SMS as a Message document for audit trail.
-    const msgDoc = new Message({
-      schoolId,
-      sender: undefined, // system-generated
-      recipients: [],    // no User recipients — this is a direct Parent send
-      subject: 'SMS',
-      body: message,
-      type: 'SMS',
-      status: 'SENT',
-      sentAt: new Date(),
-    });
-    // Message.sender is required — attach a placeholder if needed. If the
-    // Message model makes sender required, we use the school's owner.
-    // Simplest: bypass the Message record for parent SMS and just queue.
     await smsQueue.add('send-sms', {
       schoolId,
       to: parent.phone,
-      message,
-      senderId: undefined,
+      message: message.trim(),
     });
 
     return { queued: true, phone: parent.phone };
   }
 
+  // ============================================================
+  // MESSAGES
+  // ============================================================
   static async getMessages(schoolId: string, query: any) {
+    // Whitelist: strip any `schoolId` the client might have sent so it can't
+    // override the tenant scope. Same pattern used in StudentService and
+    // ResultService.
     const { schoolId: _ignored, ...safeQuery } = query || {};
     return Message.find({ ...safeQuery, schoolId }).populate('sender recipients');
   }
 
+  // ============================================================
+  // NOTIFICATIONS
+  // ============================================================
   static async getNotifications(recipientId: string, schoolId: string) {
     return Notification.find({ recipientId, schoolId }).sort({ createdAt: -1 });
   }
