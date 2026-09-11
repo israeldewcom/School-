@@ -1,4 +1,4 @@
-// src/core/subscriptions/subscription.service.ts
+ // src/core/subscriptions/subscription.service.ts
 
 import { Subscription } from '../../models/Subscription';
 import { SubscriptionPlan } from '../../models/SubscriptionPlan';
@@ -188,12 +188,19 @@ export class SubscriptionService {
   }
 
   // First-time subscribe for a school with NO Subscription document yet.
-  // Creates a placeholder Subscription (status PENDING, no dates set) so
-  // there's something for the approval flow to activate, then records the
-  // payment proof as a SubscriptionRenewal exactly like requestRenewal
-  // does — approveRenewal() already knows how to take a renewal's chosen
-  // plan and (re)activate the linked subscription, so no changes were
-  // needed there.
+  // Creates a placeholder Subscription so there's something for the
+  // approval flow to activate, then records the payment proof as a
+  // SubscriptionRenewal exactly like requestRenewal does — approveRenewal()
+  // already knows how to take a renewal's chosen plan and (re)activate the
+  // linked subscription, so no changes were needed there.
+  //
+  // The placeholder uses status: 'ACTIVE' + isTrial: true (NOT a 'PENDING'
+  // status — the Subscription schema's status enum only allows ACTIVE,
+  // CANCELLED, EXPIRED, PAST_DUE, so anything else fails Mongoose
+  // validation and throws a 500 on save). isTrial: true is exactly the
+  // "not yet a real paid subscription" signal the rest of the codebase
+  // already uses, and approveRenewal() correctly flips isTrial to false
+  // once payment is approved.
   static async requestNewSubscription(
     schoolId: string,
     data: { reference: string; date?: string; proof?: string; planName: string }
@@ -237,20 +244,24 @@ export class SubscriptionService {
 
     const durationMap: Record<string, number> = { MONTHLY: 30, TERMLY: 90, ANNUAL: 365 };
     const now = new Date();
+    // Short placeholder window (7 days, same as a normal trial) — this is
+    // just a holding state until a super admin approves the renewal below,
+    // at which point approveRenewal() overwrites endDate/status/isTrial
+    // with the real paid values.
+    const placeholderEnd = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
 
-    // Placeholder subscription, not yet active — approveRenewal() sets
-    // status/dates for real once a super admin approves the payment.
     const subscription = new Subscription({
       schoolId: new mongoose.Types.ObjectId(schoolId),
       planId: plan._id,
-      status: 'PENDING',
+      status: 'ACTIVE',
       startDate: now,
-      endDate: now,
+      endDate: placeholderEnd,
       autoRenew: true,
       priceAtPurchase: plan.price,
       billingCycleAtPurchase: plan.billingCycle,
       durationDaysAtPurchase: durationMap[plan.billingCycle] || 90,
-      isTrial: false,
+      isTrial: true,
+      trialEndDate: placeholderEnd,
     });
     await subscription.save();
 
