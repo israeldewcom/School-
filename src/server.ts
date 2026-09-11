@@ -1,5 +1,7 @@
 // src/server.ts
 
+import './bootstrap';   // 👈 MUST be first. Registers mongoose plugins.
+
 import app from './app';
 import logger from './config/logger';
 import { connectDB, disconnectDB } from './config/database';
@@ -14,21 +16,14 @@ import { ensureDefaultPermissions } from './scripts/ensure-default-permissions';
 const PORT = env.PORT;
 
 const startServer = () => {
-  // Start the HTTP server immediately
   const server = app.listen(PORT, () => {
     logger.info(`SchoolFlow API running on port ${PORT}`);
   });
 
-  // Connect to MongoDB in the background (non-blocking)
   (async () => {
     try {
       await connectDB();
       logger.info('MongoDB connected successfully.');
-
-      // Self-healing: make sure the default subscription plans AND default
-      // role permissions exist, so onboarding, subscribe/renew, and every
-      // permission-gated route never break just because nobody ran the
-      // seed script on this environment.
       await ensureDefaultPlans();
       await ensureDefaultPermissions();
     } catch (err) {
@@ -37,29 +32,26 @@ const startServer = () => {
     }
   })();
 
-  // Connect to Redis in the background (non-blocking)
   (async () => {
     try {
       await redis.ping();
       logger.info('Redis ready.');
-      // Start jobs only if Redis is available
       await startReconciliationJob();
       await startExpiryJob();
     } catch (err) {
       logger.warn('Redis not available – will retry in 30s');
-      setInterval(async () => {
+      const interval = setInterval(async () => {
         try {
           await redis.ping();
           logger.info('Redis reconnected – starting jobs.');
           await startReconciliationJob();
           await startExpiryJob();
-          clearInterval(this);
+          clearInterval(interval);
         } catch (_) {}
       }, 30000);
     }
   })();
 
-  // Graceful shutdown
   const shutdown = async (signal: string) => {
     logger.info(`${signal} received, shutting down gracefully`);
     server.close(async () => {
@@ -75,7 +67,6 @@ const startServer = () => {
   process.on('SIGINT', () => shutdown('SIGINT'));
 };
 
-// Catch any unhandled rejections to prevent crash
 process.on('unhandledRejection', (err) => {
   logger.error('Unhandled rejection:', err);
 });
