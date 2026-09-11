@@ -1,3 +1,5 @@
+// src/core/subscriptions/subscription.service.ts
+
 import { Subscription } from '../../models/Subscription';
 import { SubscriptionPlan } from '../../models/SubscriptionPlan';
 import { SubscriptionRenewal } from '../../models/SubscriptionRenewal';
@@ -63,9 +65,22 @@ export class SubscriptionService {
   // Subscription summary for the school-facing Subscription page.
   // Shape matches what the frontend's POST_RENDER_HOOKS.subscription expects:
   // { plan, status, expires, payments: [{date, method, amount}] }
+  //
+  // Schools with no Subscription document yet (never onboarded through the
+  // step that creates one, or created before that step existed) get a
+  // "none" status instead of a 404 — the frontend uses this to show the
+  // plan-picker / first-time subscribe flow instead of "Renew".
   static async getCurrent(schoolId: string) {
     const subscription = await Subscription.findOne({ schoolId }).populate('planId');
-    if (!subscription) throw new NotFoundError('No subscription found for this school');
+    if (!subscription) {
+      return {
+        plan: null,
+        status: 'none',
+        expires: null,
+        isTrial: false,
+        payments: [],
+      };
+    }
 
     const statusMap: Record<string, string> = {
       ACTIVE: subscription.isTrial ? 'pending' : 'active',
@@ -162,6 +177,94 @@ export class SubscriptionService {
       subscriptionId: subscription._id,
       plan: targetPlan?.name || 'Unknown plan',
       amount: targetPlan?.price || 0,
+      proofUrl,
+      reference: data.reference.trim(),
+      status: 'pending',
+    });
+    await renewal.save();
+
+    await emailQueue.add('send-renewal-notification', { renewalId: renewal._id });
+    return renewal;
+  }
+
+  // First-time subscribe for a school with NO Subscription document yet.
+  // Creates a placeholder Subscription (status PENDING, no dates set) so
+  // there's something for the approval flow to activate, then records the
+  // payment proof as a SubscriptionRenewal exactly like requestRenewal
+  // does — approveRenewal() already knows how to take a renewal's chosen
+  // plan and (re)activate the linked subscription, so no changes were
+  // needed there.
+  static async requestNewSubscription(
+    schoolId: string,
+    data: { reference: string; date?: string; proof?: string; planName: string }
+  ) {
+    const existing = await Subscription.findOne({ schoolId });
+    if (existing) {
+      throw new BadRequestError('This school already has a subscription. Use renew instead.');
+    }
+
+    if (!data.planName || !data.planName.trim()) {
+      throw new BadRequestError('Please choose a plan');
+    }
+
+    const plan = await SubscriptionPlan.findOne({
+      name: new RegExp(`^${data.planName.trim()}$`, 'i'),
+      isActive: true,
+    });
+    if (!plan) throw new BadRequestError(`"${data.planName}" is not a valid plan`);
+
+    if (!data.reference || !data.reference.trim()) {
+      throw new BadRequestError('Transaction reference is required');
+    }
+
+    const existingRef = await SubscriptionRenewal.findOne({ reference: data.reference.trim() });
+    if (existingRef) {
+      throw new BadRequestError('A renewal with this reference has already been submitted');
+    }
+
+    let proofUrl: string | undefined;
+    if (data.proof) {
+      try {
+        const uploadResult = await cloudinary.uploader.upload(data.proof, {
+          folder: `schools/${schoolId}/renewal-proofs`,
+          resource_type: 'auto',
+        });
+        proofUrl = uploadResult.secure_url;
+      } catch (err) {
+        throw new BadRequestError('Failed to upload payment proof. Please try again.');
+      }
+    }
+
+    const durationMap: Record<string, number> = { MONTHLY: 30, TERMLY: 90, ANNUAL: 365 };
+    const now = new Date();
+
+    // Placeholder subscription, not yet active — approveRenewal() sets
+    // status/dates for real once a super admin approves the payment.
+    const subscription = new Subscription({
+      schoolId: new mongoose.Types.ObjectId(schoolId),
+      planId: plan._id,
+      status: 'PENDING',
+      startDate: now,
+      endDate: now,
+      autoRenew: true,
+      priceAtPurchase: plan.price,
+      billingCycleAtPurchase: plan.billingCycle,
+      durationDaysAtPurchase: durationMap[plan.billingCycle] || 90,
+      isTrial: false,
+    });
+    await subscription.save();
+
+    const school = await School.findById(schoolId);
+    if (school) {
+      school.subscriptionId = subscription._id.toString();
+      await school.save();
+    }
+
+    const renewal = new SubscriptionRenewal({
+      schoolId: new mongoose.Types.ObjectId(schoolId),
+      subscriptionId: subscription._id,
+      plan: plan.name,
+      amount: plan.price,
       proofUrl,
       reference: data.reference.trim(),
       status: 'pending',
