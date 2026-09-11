@@ -3,6 +3,8 @@ import { SchoolService } from './school.service';
 import { User } from '../../models/User';
 import { Class } from '../../models/Class';
 import { AuthService } from '../auth/auth.service';
+import { SubscriptionPlan } from '../../models/SubscriptionPlan';
+import { Subscription } from '../../models/Subscription';
 import logger from '../../config/logger';
 
 export class SchoolController {
@@ -175,12 +177,51 @@ export class SchoolController {
         logger.info(`Created ${classDocs.length} classes`);
       }
 
-      // 4. (Optional) Load sample data – stub for now
+      // 4. Create a trial Subscription for the new school.
+      // Every subscription-gated feature (renewal, SMS top-up, the
+      // subscription page, subscription.middleware access checks) requires
+      // a Subscription document to exist — without this step schools that
+      // came through onboarding had none, and every check failed with
+      // "No subscription found. Please contact support."
+      const defaultPlan =
+        (await SubscriptionPlan.findOne({ name: 'Starter', isActive: true })) ||
+        (await SubscriptionPlan.findOne({ isActive: true }));
+
+      if (defaultPlan) {
+        const trialDays = 7;
+        const now = new Date();
+        const trialEnd = new Date(now.getTime() + trialDays * 24 * 60 * 60 * 1000);
+        const durationMap: Record<string, number> = { MONTHLY: 30, TERMLY: 90, ANNUAL: 365 };
+
+        const subscription = new Subscription({
+          schoolId: school._id,
+          planId: defaultPlan._id,
+          status: 'ACTIVE',
+          startDate: now,
+          endDate: trialEnd,
+          autoRenew: true,
+          priceAtPurchase: defaultPlan.price,
+          billingCycleAtPurchase: defaultPlan.billingCycle,
+          durationDaysAtPurchase: durationMap[defaultPlan.billingCycle] || 90,
+          isTrial: true,
+          trialEndDate: trialEnd,
+        });
+        await subscription.save();
+        school.subscriptionId = subscription._id.toString();
+        await school.save();
+        logger.info(`Trial subscription created for school ${school._id}`);
+      } else {
+        logger.warn(
+          `No SubscriptionPlan found — school ${school._id} onboarded without a subscription. Run the seed script.`
+        );
+      }
+
+      // 5. (Optional) Load sample data – stub for now
       if (loadSample) {
         logger.info('Sample data requested for school', school._id);
       }
 
-      // 5. Auto-login the owner (generate tokens)
+      // 6. Auto-login the owner (generate tokens)
       const loginResult = await AuthService.login(
         owner.username,
         password,
@@ -188,7 +229,7 @@ export class SchoolController {
         req.headers['user-agent']
       );
 
-      // 6. Return tokens and user info
+      // 7. Return tokens and user info
       res.status(201).json({
         success: true,
         data: {
