@@ -9,8 +9,31 @@ const router = express.Router();
 
 router.get('/', requirePermission('staff', 'read'), StaffController.getStaff);
 router.get('/:id', requirePermission('staff', 'read'), StaffController.getStaffMember);
-router.post('/', requirePermission('staff', 'write'), checkEntitlement('staff'), validate(createStaffSchema), StaffController.create);
-router.put('/:id', requirePermission('staff', 'write'), validate(updateStaffSchema), StaffController.update);
+
+router.post(
+  '/',
+  requirePermission('staff', 'write'),
+  checkEntitlement('staff'),
+  validate(createStaffSchema),
+  StaffController.create
+);
+
+// Static-path routes MUST come before '/:id' or Express will treat "login"
+// as an :id param. Same class of bug that was causing /schools/current to
+// hit /schools/:id with id="current".
+router.post(
+  '/:id/login',
+  requirePermission('staff', 'write'),
+  StaffController.createLogin
+);
+
+router.put(
+  '/:id',
+  requirePermission('staff', 'write'),
+  validate(updateStaffSchema),
+  StaffController.update
+);
+
 router.delete('/:id', requirePermission('staff', 'delete'), StaffController.delete);
 
 export default router;
