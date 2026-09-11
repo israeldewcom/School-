@@ -1,4 +1,4 @@
- // src/core/subscriptions/subscription.service.ts
+// src/core/subscriptions/subscription.service.ts
 
 import { Subscription } from '../../models/Subscription';
 import { SubscriptionPlan } from '../../models/SubscriptionPlan';
@@ -7,7 +7,7 @@ import { School } from '../../models/School';
 import { NotFoundError, BadRequestError } from '../../utils/errors';
 import mongoose from 'mongoose';
 import { invalidateSubscriptionCache } from '../../middleware/subscription.middleware';
-import { emailQueue } from '../../jobs/queues';
+import { emailQueue, safeQueueAdd } from '../../jobs/queues';
 import { cloudinary } from '../../integrations/storage/cloudinary';
 
 export class SubscriptionService {
@@ -39,7 +39,8 @@ export class SubscriptionService {
   }
 
   static async getAll(schoolId: string, query: any) {
-    return Subscription.find({ schoolId, ...query }).populate('planId');
+    const { schoolId: _ignored, ...safeQuery } = query || {};
+    return Subscription.find({ ...safeQuery, schoolId }).populate('planId');
   }
 
   static async update(id: string, schoolId: string, data: any) {
@@ -62,14 +63,6 @@ export class SubscriptionService {
     return SubscriptionPlan.find({ isActive: true });
   }
 
-  // Subscription summary for the school-facing Subscription page.
-  // Shape matches what the frontend's POST_RENDER_HOOKS.subscription expects:
-  // { plan, status, expires, payments: [{date, method, amount}] }
-  //
-  // Schools with no Subscription document yet (never onboarded through the
-  // step that creates one, or created before that step existed) get a
-  // "none" status instead of a 404 — the frontend uses this to show the
-  // plan-picker / first-time subscribe flow instead of "Renew".
   static async getCurrent(schoolId: string) {
     const subscription = await Subscription.findOne({ schoolId }).populate('planId');
     if (!subscription) {
@@ -114,14 +107,6 @@ export class SubscriptionService {
     };
   }
 
-  // Accepts the manual bank-transfer renewal payload as sent by the
-  // frontend's submitRenewal(): { reference, date, proof, planName }.
-  // `proof` is a base64 data URL (or empty string) from
-  // FileReader.readAsDataURL. `planName` is optional — if omitted, the
-  // renewal keeps the school's current plan (pure renewal). If provided,
-  // it must match a real, active SubscriptionPlan; the plan's own price is
-  // always used for `amount` — a client can request a plan by name, but
-  // can never dictate what it costs.
   static async requestRenewal(
     schoolId: string,
     data: { reference: string; date?: string; proof?: string; planName?: string }
@@ -156,10 +141,6 @@ export class SubscriptionService {
 
     const currentPlan = subscription.planId as any;
 
-    // Resolve the plan being paid for. Defaults to the current plan (a
-    // plain renewal). If the client requested a different plan by name
-    // (e.g. upgrading Starter -> Pro), look it up server-side — never
-    // trust a client-supplied price or plan id directly.
     let targetPlan = currentPlan;
     if (data.planName && data.planName.trim().toLowerCase() !== currentPlan?.name?.toLowerCase()) {
       const requested = await SubscriptionPlan.findOne({
@@ -183,24 +164,12 @@ export class SubscriptionService {
     });
     await renewal.save();
 
-    await emailQueue.add('send-renewal-notification', { renewalId: renewal._id });
+    // 🔴 FIX: safeQueueAdd prevents a dead Redis from hanging this request.
+    await safeQueueAdd(emailQueue, 'send-renewal-notification', { renewalId: renewal._id });
+
     return renewal;
   }
 
-  // First-time subscribe for a school with NO Subscription document yet.
-  // Creates a placeholder Subscription so there's something for the
-  // approval flow to activate, then records the payment proof as a
-  // SubscriptionRenewal exactly like requestRenewal does — approveRenewal()
-  // already knows how to take a renewal's chosen plan and (re)activate the
-  // linked subscription, so no changes were needed there.
-  //
-  // The placeholder uses status: 'ACTIVE' + isTrial: true (NOT a 'PENDING'
-  // status — the Subscription schema's status enum only allows ACTIVE,
-  // CANCELLED, EXPIRED, PAST_DUE, so anything else fails Mongoose
-  // validation and throws a 500 on save). isTrial: true is exactly the
-  // "not yet a real paid subscription" signal the rest of the codebase
-  // already uses, and approveRenewal() correctly flips isTrial to false
-  // once payment is approved.
   static async requestNewSubscription(
     schoolId: string,
     data: { reference: string; date?: string; proof?: string; planName: string }
@@ -244,10 +213,6 @@ export class SubscriptionService {
 
     const durationMap: Record<string, number> = { MONTHLY: 30, TERMLY: 90, ANNUAL: 365 };
     const now = new Date();
-    // Short placeholder window (7 days, same as a normal trial) — this is
-    // just a holding state until a super admin approves the renewal below,
-    // at which point approveRenewal() overwrites endDate/status/isTrial
-    // with the real paid values.
     const placeholderEnd = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
 
     const subscription = new Subscription({
@@ -282,14 +247,12 @@ export class SubscriptionService {
     });
     await renewal.save();
 
-    await emailQueue.add('send-renewal-notification', { renewalId: renewal._id });
+    // 🔴 FIX: safeQueueAdd
+    await safeQueueAdd(emailQueue, 'send-renewal-notification', { renewalId: renewal._id });
+
     return renewal;
   }
 
-  // SMS credit top-up requested directly from the Subscription page (manual
-  // payment, same pattern as renewal — credited immediately here since there
-  // is no gateway in the loop; the amount/credits still get recorded on the
-  // school + a Payment row for the billing history view).
   static async topUpSMS(schoolId: string, amount: number) {
     if (!amount || amount < 1000) {
       throw new BadRequestError('Minimum top-up is ₦1,000');
@@ -335,10 +298,6 @@ export class SubscriptionService {
 
       const subscription = await Subscription.findById(renewal.subscriptionId);
       if (subscription) {
-        // If the renewal named a plan different from the subscription's
-        // current one (e.g. Starter -> Pro), switch the subscription onto
-        // it. Falls back to the current plan by id if the name can't be
-        // resolved, so a plain renewal never gets blocked by this step.
         let plan = await SubscriptionPlan.findById(subscription.planId);
         if (renewal.plan && plan?.name?.toLowerCase() !== renewal.plan.toLowerCase()) {
           const newPlan = await SubscriptionPlan.findOne({
@@ -360,7 +319,7 @@ export class SubscriptionService {
         subscription.endDate = new Date(Date.now() + daysToAdd * 24 * 60 * 60 * 1000);
         subscription.status = 'ACTIVE';
         subscription.isTrial = false;
-        subscription.trialEndDate = undefined;   // instead of null
+        subscription.trialEndDate = undefined;
         await subscription.save({ session });
         await invalidateSubscriptionCache(subscription.schoolId.toString());
       }
