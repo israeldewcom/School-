@@ -1,3 +1,5 @@
+// src/server.ts
+
 import app from './app';
 import logger from './config/logger';
 import { connectDB, disconnectDB } from './config/database';
@@ -6,6 +8,7 @@ import { env } from './config/env';
 import { closeAllQueues } from './jobs/queues';
 import { startReconciliationJob } from './jobs/reconciliation.job';
 import { startExpiryJob } from './jobs/expiry.job';
+import { ensureDefaultPlans } from './scripts/ensure-default-plans';
 
 const PORT = env.PORT;
 
@@ -20,6 +23,11 @@ const startServer = () => {
     try {
       await connectDB();
       logger.info('MongoDB connected successfully.');
+
+      // Self-healing: make sure at least the default subscription plans
+      // exist so onboarding and subscribe/renew flows never break just
+      // because nobody ran the seed script on this environment.
+      await ensureDefaultPlans();
     } catch (err) {
       logger.error('MongoDB connection failed – retrying in 30s');
       setTimeout(() => connectDB(), 30000);
