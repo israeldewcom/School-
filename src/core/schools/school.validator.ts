@@ -1,32 +1,41 @@
 import { z } from 'zod';
 
-export const createSchoolSchema = z.object({
+const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid id');
+
+export const createStudentSchema = z.object({
   body: z.object({
-    name: z.string().min(1),
-    slug: z.string().min(1),
+    admissionNumber: z.string().min(1),
+    firstName: z.string().min(1),
+    middleName: z.string().optional(),
+    lastName: z.string().min(1),
+    dateOfBirth: z.string().transform((s) => new Date(s)),
+    gender: z.enum(['MALE', 'FEMALE']),
+    classId: objectId,
     address: z.string().min(1),
-    phone: z.string().min(1),
-    email: z.string().email(),
-    country: z.string().min(1),
-    state: z.string().min(1),
-    city: z.string().min(1),
-    currency: z.string().default('NGN'),
-    timezone: z.string().default('Africa/Lagos'),
+    // Optional but persisted: these are now accepted so parent linking works.
+    parentIds: z.array(objectId).optional(),
+    // Optional session (some flows need it, others rely on the class's year).
+    sessionId: objectId.optional(),
+    medicalInfo: z.string().optional(),
+    photo: z.string().optional(),
   }),
 });
 
-export const updateSchoolSchema = z.object({
+export const updateStudentSchema = z.object({
   body: z.object({
-    name: z.string().optional(),
-    slug: z.string().optional(),
+    admissionNumber: z.string().optional(),
+    firstName: z.string().optional(),
+    middleName: z.string().optional(),
+    lastName: z.string().optional(),
+    dateOfBirth: z.string().transform((s) => new Date(s)).optional(),
+    gender: z.enum(['MALE', 'FEMALE']).optional(),
+    classId: objectId.optional(),
     address: z.string().optional(),
-    phone: z.string().optional(),
-    email: z.string().email().optional(),
-    country: z.string().optional(),
-    state: z.string().optional(),
-    city: z.string().optional(),
-    currency: z.string().optional(),
-    timezone: z.string().optional(),
-    status: z.enum(['PENDING', 'ACTIVE', 'SUSPENDED', 'ARCHIVED']).optional(),
+    // Whitelist here so a client can link/unlink parents but not tamper
+    // with other fields they shouldn't touch.
+    parentIds: z.array(objectId).optional(),
+    medicalInfo: z.string().optional(),
+    photo: z.string().optional(),
+    status: z.enum(['ACTIVE', 'GRADUATED', 'TRANSFERRED', 'SUSPENDED', 'ARCHIVED']).optional(),
   }),
 });
