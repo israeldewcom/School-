@@ -99,14 +99,17 @@ export class SubscriptionService {
     };
   }
 
-  // Accepts the manual bank-transfer renewal payload as actually sent by the
-  // frontend's submitRenewal(): { reference, date, proof } where `proof` is
-  // a base64 data URL (or empty string) from FileReader.readAsDataURL.
-  // Resolves plan + amount server-side from the school's current subscription
-  // rather than trusting client-supplied plan/amount.
+  // Accepts the manual bank-transfer renewal payload as sent by the
+  // frontend's submitRenewal(): { reference, date, proof, planName }.
+  // `proof` is a base64 data URL (or empty string) from
+  // FileReader.readAsDataURL. `planName` is optional — if omitted, the
+  // renewal keeps the school's current plan (pure renewal). If provided,
+  // it must match a real, active SubscriptionPlan; the plan's own price is
+  // always used for `amount` — a client can request a plan by name, but
+  // can never dictate what it costs.
   static async requestRenewal(
     schoolId: string,
-    data: { reference: string; date?: string; proof?: string }
+    data: { reference: string; date?: string; proof?: string; planName?: string }
   ) {
     const subscription = await Subscription.findOne({
       schoolId,
@@ -136,13 +139,29 @@ export class SubscriptionService {
       }
     }
 
-    const plan = subscription.planId as any;
+    const currentPlan = subscription.planId as any;
+
+    // Resolve the plan being paid for. Defaults to the current plan (a
+    // plain renewal). If the client requested a different plan by name
+    // (e.g. upgrading Starter -> Pro), look it up server-side — never
+    // trust a client-supplied price or plan id directly.
+    let targetPlan = currentPlan;
+    if (data.planName && data.planName.trim().toLowerCase() !== currentPlan?.name?.toLowerCase()) {
+      const requested = await SubscriptionPlan.findOne({
+        name: new RegExp(`^${data.planName.trim()}$`, 'i'),
+        isActive: true,
+      });
+      if (!requested) {
+        throw new BadRequestError(`"${data.planName}" is not a valid plan`);
+      }
+      targetPlan = requested;
+    }
 
     const renewal = new SubscriptionRenewal({
       schoolId: new mongoose.Types.ObjectId(schoolId),
       subscriptionId: subscription._id,
-      plan: plan?.name || 'Unknown plan',
-      amount: subscription.priceAtPurchase || plan?.price || 0,
+      plan: targetPlan?.name || 'Unknown plan',
+      amount: targetPlan?.price || 0,
       proofUrl,
       reference: data.reference.trim(),
       status: 'pending',
@@ -202,7 +221,28 @@ export class SubscriptionService {
 
       const subscription = await Subscription.findById(renewal.subscriptionId);
       if (subscription) {
-        const daysToAdd = subscription.durationDaysAtPurchase || 90;
+        // If the renewal named a plan different from the subscription's
+        // current one (e.g. Starter -> Pro), switch the subscription onto
+        // it. Falls back to the current plan by id if the name can't be
+        // resolved, so a plain renewal never gets blocked by this step.
+        let plan = await SubscriptionPlan.findById(subscription.planId);
+        if (renewal.plan && plan?.name?.toLowerCase() !== renewal.plan.toLowerCase()) {
+          const newPlan = await SubscriptionPlan.findOne({
+            name: new RegExp(`^${renewal.plan}$`, 'i'),
+            isActive: true,
+          });
+          if (newPlan) plan = newPlan;
+        }
+
+        const durationMap: Record<string, number> = { MONTHLY: 30, TERMLY: 90, ANNUAL: 365 };
+        const daysToAdd = plan ? durationMap[plan.billingCycle] || 90 : subscription.durationDaysAtPurchase || 90;
+
+        if (plan) {
+          subscription.planId = plan._id;
+          subscription.priceAtPurchase = plan.price;
+          subscription.billingCycleAtPurchase = plan.billingCycle;
+          subscription.durationDaysAtPurchase = daysToAdd;
+        }
         subscription.endDate = new Date(Date.now() + daysToAdd * 24 * 60 * 60 * 1000);
         subscription.status = 'ACTIVE';
         subscription.isTrial = false;
