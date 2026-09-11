@@ -1,3 +1,5 @@
+// src/middleware/subscription.middleware.ts
+
 import { Request, Response, NextFunction } from 'express';
 import { Subscription } from '../models/Subscription';
 import { ForbiddenError } from '../utils/errors';
@@ -15,9 +17,15 @@ export const requireActiveSubscription = async (req: Request, res: Response, nex
     return next();
   }
 
-  // Whitelist manual payment endpoints
+  // Whitelist manual payment endpoints and first-time subscribe/renewal
+  // endpoints — these are exactly the routes a school with NO subscription
+  // (or an expired one) needs to reach in order to fix that, so they can't
+  // be gated behind having an active subscription.
   if (req.path.match(/^\/api\/v1\/payments\/manual$/) ||
-      req.path.match(/^\/api\/v1\/payments\/[a-f0-9]{24}\/approve$/)) {
+      req.path.match(/^\/api\/v1\/payments\/[a-f0-9]{24}\/approve$/) ||
+      req.path.match(/^\/api\/v1\/subscriptions\/subscribe$/) ||
+      req.path.match(/^\/api\/v1\/subscriptions\/renew$/) ||
+      req.path.match(/^\/api\/v1\/subscriptions\/plans$/)) {
     return next();
   }
 
