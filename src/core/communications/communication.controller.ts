@@ -10,6 +10,16 @@ export class CommunicationController {
     } catch (error) { next(error); }
   }
 
+  // New: send an SMS directly to a Parent record. The frontend calls
+  // POST /communications/sms-to-parent with { parentId, message }.
+  static async sendParentSMS(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { parentId, message } = req.body;
+      const result = await CommunicationService.sendParentSMS(req.schoolId!, parentId, message);
+      res.status(201).json({ success: true, data: result });
+    } catch (error) { next(error); }
+  }
+
   static async getMessages(req: Request, res: Response, next: NextFunction) {
     try {
       const msgs = await CommunicationService.getMessages(req.schoolId!, req.query);
