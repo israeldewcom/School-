@@ -6,20 +6,26 @@
 // collection is empty, it creates the default role→permissions mapping
 // using the same data as scripts/seed.ts.
 //
-// Why this exists: seed.ts seeds Permission and SubscriptionPlan together,
-// but on environments where nobody ran `npm run seed` (e.g. Render's free
-// tier, with no Shell to run it), BOTH collections end up empty — not just
-// plans. That's exactly what caused "Permission denied: subscriptions:read"
-// for a SCHOOL_OWNER who should have had blanket (*:*) access. This makes
-// that impossible going forward: the moment the Permission collection is
-// empty, the next server boot repopulates the default roles automatically.
+// Also clears any cached permission lookups (perms:<ROLE> keys in the
+// CacheEntry collection used by getJSON/setJSON — see config/mongoStore.ts)
+// every time it runs. Why: permission.middleware.ts caches a role's
+// permissions for 1 hour after the first lookup. If that first lookup ever
+// happened while the Permission collection was still empty, it cached an
+// empty array — meaning even after this script populates real permissions,
+// every request for up to an hour would keep reading the stale empty
+// cache and get "Permission denied" regardless of the database now being
+// correct. Clearing the cache here guarantees the next request always sees
+// current data, on every boot, not just the first one.
 //
 // SAFE to run every time the server starts:
-//  - It only inserts if the collection is completely empty — it never
-//    overwrites permissions you've since edited for a role in the database.
-//  - It never touches users or admin accounts — only role permissions.
+//  - It only inserts Permission docs if the collection is completely empty
+//    — it never overwrites permissions you've since edited for a role.
+//  - Clearing the perms:* cache is always safe — it's just a cache; the
+//    next request repopulates it from the database.
+//  - It never touches users or admin accounts.
 
 import { Permission } from '../models/Permission';
+import { del } from '../config/mongoStore';
 import logger from '../config/logger';
 
 const DEFAULT_ROLE_PERMISSIONS = [
@@ -48,20 +54,24 @@ const DEFAULT_ROLE_PERMISSIONS = [
 export const ensureDefaultPermissions = async (): Promise<void> => {
   try {
     const existingCount = await Permission.countDocuments({});
-    if (existingCount > 0) {
-      // Some role permissions already exist — don't touch anything, so any
-      // manual edits made directly in the database survive restarts.
-      return;
+    if (existingCount === 0) {
+      for (const rp of DEFAULT_ROLE_PERMISSIONS) {
+        await Permission.findOneAndUpdate(
+          { role: rp.role },
+          { permissions: rp.permissions },
+          { upsert: true }
+        );
+      }
+      logger.info('No permission documents found — default role permissions created automatically.');
     }
 
+    // Always clear the permission cache on boot, regardless of whether we
+    // just inserted anything above — this guards against a stale
+    // empty-array cache left over from a previous boot that ran before
+    // permissions existed in the database.
     for (const rp of DEFAULT_ROLE_PERMISSIONS) {
-      await Permission.findOneAndUpdate(
-        { role: rp.role },
-        { permissions: rp.permissions },
-        { upsert: true }
-      );
+      await del(`perms:${rp.role}`);
     }
-    logger.info('No permission documents found — default role permissions created automatically.');
   } catch (err) {
     logger.error('ensureDefaultPermissions failed:', err);
   }
