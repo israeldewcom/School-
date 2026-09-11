@@ -1,7 +1,10 @@
 import { Result } from '../../models/Result';
-import { NotFoundError, BadRequestError } from '../../utils/errors';
+import { NotFoundError } from '../../utils/errors';
 
 export class ResultService {
+  // Upsert on the (student, subject, term, session) tuple so a teacher can
+  // correct a score by re-submitting. Previously this threw
+  // 'Result already exists' which made score correction impossible.
   static async create(data: any) {
     const existing = await Result.findOne({
       studentId: data.studentId,
@@ -9,7 +12,13 @@ export class ResultService {
       termId: data.termId,
       sessionId: data.sessionId,
     });
-    if (existing) throw new BadRequestError('Result already exists for this subject/term');
+
+    if (existing) {
+      // Update in place — keeps the same _id so references stay valid.
+      Object.assign(existing, data);
+      await existing.save();
+      return existing;
+    }
 
     const result = new Result(data);
     await result.save();
@@ -23,7 +32,8 @@ export class ResultService {
   }
 
   static async getAll(schoolId: string, query: any) {
-    return Result.find({ schoolId, ...query }).populate('subjectId studentId');
+    const { schoolId: _ignored, ...safeQuery } = query || {};
+    return Result.find({ ...safeQuery, schoolId }).populate('subjectId studentId');
   }
 
   static async update(id: string, schoolId: string, data: any) {
