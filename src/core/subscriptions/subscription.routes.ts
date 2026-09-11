@@ -1,3 +1,5 @@
+// src/core/subscriptions/subscription.routes.ts
+
 import express from 'express';
 import { SubscriptionController } from './subscription.controller';
 import { requirePermission } from '../../middleware/permission.middleware';
@@ -11,6 +13,7 @@ router.get('/plans', requirePermission('subscriptions', 'read'), SubscriptionCon
 router.get('/trial-status', requirePermission('subscriptions', 'read'), SubscriptionController.getTrialStatus);
 router.get('/current', requirePermission('subscriptions', 'read'), SubscriptionController.getCurrent);
 router.post('/renew', requirePermission('subscriptions', 'write'), SubscriptionController.requestRenewal);
+router.post('/subscribe', requirePermission('subscriptions', 'write'), SubscriptionController.subscribe);
 router.post('/sms/topup', requirePermission('subscriptions', 'write'), SubscriptionController.topUpSMS);
 
 // Kept for backwards compatibility with any existing callers of the old path.
