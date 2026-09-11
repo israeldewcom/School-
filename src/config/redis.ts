@@ -9,7 +9,6 @@ const getRedisClient = (): Redis => {
     const url = env.REDIS_URL;
     if (!url) {
       logger.warn('REDIS_URL not set – Redis features disabled');
-      // Return a dummy client that does nothing
       return new Redis({ lazyConnect: true });
     }
 
@@ -22,19 +21,23 @@ const getRedisClient = (): Redis => {
     }
 
     client = new Redis(url, {
-      maxRetriesPerRequest: null,
+      // 🔴 FIX #1: was `null`, which queues commands forever when Redis is
+      // unreachable. With a finite value, ioredis rejects after 3 retries
+      // and the caller can fall back gracefully.
+      maxRetriesPerRequest: 3,
+
+      // 🔴 FIX #2: fail immediately if the connection isn't ready instead of
+      // buffering the command in the offline queue. This is what stops
+      // HTTP requests from hanging forever when Redis is down.
+      enableOfflineQueue: false,
+
       enableReadyCheck: false,
-      connectTimeout: 10000,
+      connectTimeout: 5000,
       retryStrategy: (times) => {
-        // Exponential backoff: 1s, 2s, 4s, 8s, 16s... up to 60s
         const delay = Math.min(Math.pow(2, times) * 1000, 60000);
         logger.warn(`Redis reconnect attempt ${times} in ${delay}ms`);
         return delay;
       },
-      // Only attach TLS options when the URL scheme is rediss://.
-      // Passing a tls object alongside a plain redis:// URL, or omitting
-      // servername for a rediss:// URL, is a common cause of silent
-      // connect-error-retry loops with managed Redis providers.
       ...(isTls
         ? {
             tls: {
@@ -45,11 +48,10 @@ const getRedisClient = (): Redis => {
         : {}),
     });
 
-    // Suppress repeated error logs (only log once per error type)
     let lastErrorTime = 0;
     client.on('error', (err) => {
       const now = Date.now();
-      if (now - lastErrorTime > 30000) { // log at most once per 30s
+      if (now - lastErrorTime > 30000) {
         logger.error('Redis error:', err.message);
         lastErrorTime = now;
       }
@@ -72,26 +74,11 @@ const getRedisClient = (): Redis => {
 
 export const redis = getRedisClient();
 
-// How long we're willing to wait on any single Redis operation before
-// treating it as failed and falling back. Redis calls back sessions/locks/
-// idempotency — none of them should ever be allowed to hang a user-facing
-// request, so this timeout is intentionally short.
+// Kept for compatibility with any existing callers. The safeRedis wrapper
+// now relies on the client's own fast-fail behavior, so the timeout race
+// is a belt-and-braces second layer.
 const REDIS_OP_TIMEOUT_MS = 1500;
 
-// Wrappers that silently fail if Redis is down OR degraded.
-//
-// IMPORTANT: checking `redis.status` alone is not enough. ioredis only
-// reports 'end' or 'close' once it has fully given up. While Redis is
-// merely unreachable or slow, the client sits in 'connecting' or
-// 'reconnecting' — and because this client is configured with
-// `maxRetriesPerRequest: null`, commands issued in that state are queued
-// and retried forever rather than rejected. Without a timeout here, that
-// means `await fn()` can hang indefinitely, taking the caller's HTTP
-// request down with it (this is what caused login/onboarding to spin
-// forever instead of failing when Redis was degraded).
-//
-// Racing every call against a short timeout guarantees safeRedis always
-// settles quickly, no matter what ioredis is doing internally.
 const safeRedis = async <T>(fn: () => Promise<T>, fallback: T): Promise<T> => {
   if (!redis.status || redis.status === 'end' || redis.status === 'close') {
     return fallback;
@@ -162,9 +149,4 @@ export const getIdempotency = async <T>(key: string): Promise<T | null> => {
   return getJSON<T>(`idempotency:${key}`);
 };
 
-// General-purpose safe wrapper for any raw ioredis command (sadd, smembers,
-// srem, set, etc.) not already covered by the helpers above. Use this
-// instead of calling methods on the exported `redis` client directly,
-// so every Redis touchpoint gets the same timeout-and-fallback protection.
-// Example: `await safeRedisCall(() => redis.sadd(key, val), null)`
 export const safeRedisCall = safeRedis;
