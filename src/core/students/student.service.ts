@@ -6,7 +6,6 @@ import { NotFoundError, BadRequestError, ForbiddenError } from '../../utils/erro
 
 export class StudentService {
   static async create(data: any) {
-    // Check entitlement: maxStudents
     const school = await School.findById(data.schoolId);
     if (!school) throw new NotFoundError('School not found');
 
@@ -21,8 +20,17 @@ export class StudentService {
       }
     }
 
-    const existing = await Student.findOne({ schoolId: data.schoolId, admissionNumber: data.admissionNumber });
+    const existing = await Student.findOne({
+      schoolId: data.schoolId,
+      admissionNumber: data.admissionNumber,
+    });
     if (existing) throw new BadRequestError('Admission number already exists');
+
+    // Normalize parentIds — dedupe and drop falsy values so a bad client
+    // payload can't create [null, undefined] in the array.
+    if (Array.isArray(data.parentIds)) {
+      data.parentIds = [...new Set(data.parentIds.filter(Boolean))];
+    }
 
     const student = new Student(data);
     await student.save();
@@ -30,17 +38,28 @@ export class StudentService {
   }
 
   static async getById(id: string, schoolId: string) {
-    const student = await Student.findOne({ _id: id, schoolId }).populate('classId parentIds');
+    const student = await Student.findOne({ _id: id, schoolId })
+      .populate('classId')
+      .populate('parentIds');
     if (!student) throw new NotFoundError('Student not found');
     return student;
   }
 
   static async getAll(schoolId: string, query: any) {
-    return Student.find({ schoolId, ...query }).populate('classId');
+    // Strip schoolId from query so a client can't override tenant scoping.
+    const { schoolId: _ignored, ...safeQuery } = query || {};
+    return Student.find({ ...safeQuery, schoolId })
+      .populate('classId')
+      .populate('parentIds');
   }
 
   static async update(id: string, schoolId: string, data: any) {
-    const student = await Student.findOneAndUpdate({ _id: id, schoolId }, data, { new: true });
+    if (Array.isArray(data.parentIds)) {
+      data.parentIds = [...new Set(data.parentIds.filter(Boolean))];
+    }
+    const student = await Student.findOneAndUpdate({ _id: id, schoolId }, data, { new: true })
+      .populate('classId')
+      .populate('parentIds');
     if (!student) throw new NotFoundError('Student not found');
     return student;
   }
