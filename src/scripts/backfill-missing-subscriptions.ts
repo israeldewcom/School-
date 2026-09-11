@@ -1,3 +1,5 @@
+// src/scripts/backfill-missing-subscriptions.ts
+//
 // One-off backfill for schools created before onboarding created a
 // Subscription automatically (see school.controller.ts#onboard step 4).
 // Finds every School with no matching Subscription document and gives it
@@ -5,7 +7,8 @@
 // (renewal, SMS top-up, the Subscription page) stop failing with
 // "No subscription found. Please contact support."
 //
-// Run with: npx ts-node src/scripts/backfill-missing-subscriptions.ts
+// Run with: npm run backfill-subscriptions
+// (or: npx ts-node src/scripts/backfill-missing-subscriptions.ts)
 
 import { School } from '../models/School';
 import { Subscription } from '../models/Subscription';
