@@ -1,4 +1,12 @@
 // src/middleware/subscription.middleware.ts
+//
+// IMPORTANT: this middleware is mounted as router.use(requireActiveSubscription)
+// INSIDE the router that itself is mounted at app.use('/api/v1', routes) —
+// see src/routes/index.ts. That means req.path here does NOT include the
+// '/api/v1' prefix; Express strips it because it's the parent mount path.
+// A request to /api/v1/subscriptions/plans arrives here with
+// req.path === '/subscriptions/plans'. The whitelist below must match
+// against that stripped form, not the full external URL.
 
 import { Request, Response, NextFunction } from 'express';
 import { Subscription } from '../models/Subscription';
@@ -12,20 +20,25 @@ export const requireActiveSubscription = async (req: Request, res: Response, nex
     return next();
   }
 
-  // Skip auth and webhook routes
-  if (req.path.startsWith('/api/v1/auth') || req.path.startsWith('/api/v1/webhooks')) {
-    return next();
-  }
+  // NOTE: this middleware is only mounted for the block of routes AFTER
+  // authMiddleware/requireSchoolMembership/requireSchoolContext in
+  // routes/index.ts — auth and webhook routes never reach this file at all,
+  // so no path check for them is needed or correct here.
 
   // Whitelist manual payment endpoints and first-time subscribe/renewal
   // endpoints — these are exactly the routes a school with NO subscription
   // (or an expired one) needs to reach in order to fix that, so they can't
   // be gated behind having an active subscription.
-  if (req.path.match(/^\/api\/v1\/payments\/manual$/) ||
-      req.path.match(/^\/api\/v1\/payments\/[a-f0-9]{24}\/approve$/) ||
-      req.path.match(/^\/api\/v1\/subscriptions\/subscribe$/) ||
-      req.path.match(/^\/api\/v1\/subscriptions\/renew$/) ||
-      req.path.match(/^\/api\/v1\/subscriptions\/plans$/)) {
+  // Paths here are relative to the '/api/v1' mount (see note above) —
+  // e.g. '/subscriptions/plans', NOT '/api/v1/subscriptions/plans'.
+  if (req.path.match(/^\/payments\/manual$/) ||
+      req.path.match(/^\/payments\/[a-f0-9]{24}\/approve$/) ||
+      req.path.match(/^\/subscriptions\/subscribe$/) ||
+      req.path.match(/^\/subscriptions\/renew$/) ||
+      req.path.match(/^\/subscriptions\/renewal\/request$/) ||
+      req.path.match(/^\/subscriptions\/plans$/) ||
+      req.path.match(/^\/subscriptions\/current$/) ||
+      req.path.match(/^\/subscriptions\/trial-status$/)) {
     return next();
   }
 
