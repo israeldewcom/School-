@@ -11,11 +11,9 @@ export const connectDB = async (): Promise<void> => {
   }
 
   try {
-    // Simple connection – let Mongoose handle TLS automatically
     const conn = await mongoose.connect(env.MONGODB_URI, {
       serverSelectionTimeoutMS: 5000,
       socketTimeoutMS: 45000,
-      // These flags force TLS and ignore certificate issues
       tls: true,
       tlsAllowInvalidCertificates: true,
       tlsAllowInvalidHostnames: true,
@@ -34,7 +32,7 @@ export const connectDB = async (): Promise<void> => {
     });
   } catch (error) {
     logger.error('MongoDB connection error:', error);
-    throw error; // let the caller handle retry
+    throw error;
   }
 };
 
