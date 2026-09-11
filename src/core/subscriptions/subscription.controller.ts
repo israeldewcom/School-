@@ -91,11 +91,34 @@ export class SubscriptionController {
     }
   }
 
+  static async getCurrent(req: Request, res: Response, next: NextFunction) {
+    try {
+      const data = await SubscriptionService.getCurrent(req.schoolId!);
+      res.json({ success: true, data });
+      return;
+    } catch (error) {
+      next(error);
+      return;
+    }
+  }
+
   static async requestRenewal(req: Request, res: Response, next: NextFunction) {
     try {
-      const { plan, amount, proofUrl, reference } = req.body;
-      const renewal = await SubscriptionService.requestRenewal(req.schoolId!, { plan, amount, proofUrl, reference });
+      const { reference, date, proof } = req.body;
+      const renewal = await SubscriptionService.requestRenewal(req.schoolId!, { reference, date, proof });
       res.status(201).json({ success: true, data: renewal });
+      return;
+    } catch (error) {
+      next(error);
+      return;
+    }
+  }
+
+  static async topUpSMS(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { amount } = req.body;
+      const result = await SubscriptionService.topUpSMS(req.schoolId!, Number(amount));
+      res.json({ success: true, data: result });
       return;
     } catch (error) {
       next(error);
