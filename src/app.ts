@@ -29,6 +29,14 @@ if (env.SENTRY_DSN) {
 
 const app = express();
 
+// Trust the first hop from the platform's load balancer/reverse proxy
+// (Render, Vercel, etc. all sit in front of this app). Without this,
+// Express ignores X-Forwarded-For, and express-rate-limit throws
+// ERR_ERL_UNEXPECTED_X_FORWARDED_FOR because it can't safely tell which
+// IP to key rate limits on. Value of 1 = trust exactly one proxy hop;
+// raise it only if you know there are more hops in front of this app.
+app.set('trust proxy', 1);
+
 // Connect to DB (done in server.ts, but keep this for fallback)
 connectDB();
 
