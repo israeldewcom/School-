@@ -11,6 +11,7 @@ import subscriptionRoutes from '../core/subscriptions/subscription.routes';
 import resultRoutes from '../core/results/result.routes';
 import attendanceRoutes from '../core/attendance/attendance.routes';
 import reportCardRoutes from '../core/reportCards/reportCard.routes';
+import reportCardTemplateRoutes from '../core/reportCards/reportCardTemplate.routes';
 import automationRoutes from '../core/automations/automation.routes';
 import platformRoutes from '../core/platform/platform.routes';
 import webhookRoutes from './webhook.routes';
@@ -35,7 +36,6 @@ const router = express.Router();
 router.use('/auth', authRoutes);
 router.use('/webhooks', webhookRoutes);
 
-// ✅ Public school endpoints – must be BEFORE authMiddleware
 router.get('/schools/ping', SchoolController.ping);
 router.post('/schools/onboard', SchoolController.onboard);
 
@@ -43,8 +43,6 @@ router.post('/schools/onboard', SchoolController.onboard);
 // 2. PROTECTED ROUTES (authentication required)
 // ============================================================
 router.use(authMiddleware);
-
-// Platform routes (super admin only)
 router.use('/platform', platformRoutes);
 
 // ============================================================
@@ -54,7 +52,6 @@ router.use(requireSchoolMembership);
 router.use(requireSchoolContext);
 router.use(requireActiveSubscription);
 
-// Mount all school-scoped routes (excluding public ones)
 router.use('/schools', schoolRoutes);
 router.use('/students', checkEntitlement('students'), studentRoutes);
 router.use('/parents', parentRoutes);
@@ -66,7 +63,14 @@ router.use('/payments', paymentRoutes);
 router.use('/subscriptions', subscriptionRoutes);
 router.use('/results', resultRoutes);
 router.use('/attendance', attendanceRoutes);
+
+// Report card templates must be mounted BEFORE the main report-cards router
+// because both share the '/report-cards' prefix. The templates router's
+// static path ('/templates') must not be shadowed by the report-cards
+// router's '/:id' route.
+router.use('/report-cards/templates', reportCardTemplateRoutes);
 router.use('/report-cards', reportCardRoutes);
+
 router.use('/automations', automationRoutes);
 router.use('/communications', communicationRoutes);
 router.use('/notifications', notificationRoutes);
