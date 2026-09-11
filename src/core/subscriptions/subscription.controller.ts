@@ -104,8 +104,8 @@ export class SubscriptionController {
 
   static async requestRenewal(req: Request, res: Response, next: NextFunction) {
     try {
-      const { reference, date, proof } = req.body;
-      const renewal = await SubscriptionService.requestRenewal(req.schoolId!, { reference, date, proof });
+      const { reference, date, proof, planName } = req.body;
+      const renewal = await SubscriptionService.requestRenewal(req.schoolId!, { reference, date, proof, planName });
       res.status(201).json({ success: true, data: renewal });
       return;
     } catch (error) {
