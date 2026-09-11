@@ -1,3 +1,5 @@
+// src/core/subscriptions/subscription.controller.ts
+
 import { Request, Response, NextFunction } from 'express';
 import { SubscriptionService } from './subscription.service';
 import { Subscription } from '../../models/Subscription';
@@ -106,6 +108,26 @@ export class SubscriptionController {
     try {
       const { reference, date, proof, planName } = req.body;
       const renewal = await SubscriptionService.requestRenewal(req.schoolId!, { reference, date, proof, planName });
+      res.status(201).json({ success: true, data: renewal });
+      return;
+    } catch (error) {
+      next(error);
+      return;
+    }
+  }
+
+  // First-time subscribe for a school with no Subscription document yet.
+  // Same payload shape as requestRenewal, but planName is required here
+  // since there's no existing plan to default to.
+  static async subscribe(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { reference, date, proof, planName } = req.body;
+      const renewal = await SubscriptionService.requestNewSubscription(req.schoolId!, {
+        reference,
+        date,
+        proof,
+        planName,
+      });
       res.status(201).json({ success: true, data: renewal });
       return;
     } catch (error) {
