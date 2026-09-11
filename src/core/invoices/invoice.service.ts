@@ -2,13 +2,12 @@ import { Invoice } from '../../models/Invoice';
 import { Student } from '../../models/Student';
 import { FeeStructure } from '../../models/FeeStructure';
 import { NotFoundError, BadRequestError } from '../../utils/errors';
-import { emailQueue } from '../../jobs/queues';
+import { emailQueue, safeQueueAdd } from '../../jobs/queues';
 import { v4 as uuidv4 } from 'uuid';
 import { setIdempotency, getIdempotency } from '../../config/mongoStore';
 
 export class InvoiceService {
   static async generateInvoice(data: { studentId: string; sessionId: string; termId: string; dueDate: Date, idempotencyKey?: string }) {
-    // Idempotency check
     if (data.idempotencyKey) {
       const cached = await getIdempotency(`invoice:${data.idempotencyKey}`);
       if (cached) return cached;
@@ -27,7 +26,7 @@ export class InvoiceService {
 
     const invoiceNumber = `INV-${Date.now()}-${uuidv4().slice(0, 6)}`;
     const subtotal = feeStructure.totalAmount;
-    const discount = 0; // implement discount logic if needed
+    const discount = 0;
     const total = subtotal - discount;
 
     const invoice = new Invoice({
@@ -51,13 +50,12 @@ export class InvoiceService {
     });
     await invoice.save();
 
-    // Store idempotency
     if (data.idempotencyKey) {
       await setIdempotency(`invoice:${data.idempotencyKey}`, invoice);
     }
 
-    // Queue notification
-    await emailQueue.add('send-invoice', { invoiceId: invoice._id });
+    // 🔴 FIX: safeQueueAdd — a dead Redis no longer blocks invoice creation.
+    await safeQueueAdd(emailQueue, 'send-invoice', { invoiceId: invoice._id });
 
     return invoice;
   }
@@ -69,7 +67,8 @@ export class InvoiceService {
   }
 
   static async getAll(schoolId: string, query: any) {
-    return Invoice.find({ schoolId, ...query }).populate('studentId');
+    const { schoolId: _ignored, ...safeQuery } = query || {};
+    return Invoice.find({ ...safeQuery, schoolId }).populate('studentId');
   }
 
   static async update(id: string, schoolId: string, data: any) {
