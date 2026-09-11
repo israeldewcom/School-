@@ -47,4 +47,18 @@ export class StaffController {
       next(error);
     }
   }
+
+  // New: provisions a login for a staff member.
+  static async createLogin(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await StaffService.createLogin(
+        req.params.id,
+        req.schoolId!,
+        req.body
+      );
+      res.status(201).json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
 }
