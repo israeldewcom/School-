@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { AppError } from '../utils/errors';
 import logger from '../config/logger';
-import Sentry from '@sentry/node';
+import * as Sentry from '@sentry/node';
 
 export const errorHandler = (
   err: Error | AppError,
@@ -20,12 +20,21 @@ export const errorHandler = (
     details = err.details;
   } else {
     logger.error('Unhandled error:', err);
-    Sentry.captureException(err);
   }
 
   if (statusCode >= 500) {
     logger.error(err);
-    Sentry.captureException(err);
+    // Sentry is only initialized when SENTRY_DSN is set (see app.ts); when
+    // it isn't, Sentry.captureException still exists on the imported
+    // namespace (unlike the old `import Sentry from '@sentry/node'` default
+    // import, which was undefined and crashed this whole handler — meaning
+    // Express never sent a response and the client just hung forever).
+    // Calling it when uninitialized is a safe no-op.
+    try {
+      Sentry.captureException(err);
+    } catch (_) {
+      // Never let error reporting itself take down the error handler.
+    }
   } else {
     logger.warn(err.message);
   }
