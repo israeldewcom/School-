@@ -9,6 +9,7 @@ import { closeAllQueues } from './jobs/queues';
 import { startReconciliationJob } from './jobs/reconciliation.job';
 import { startExpiryJob } from './jobs/expiry.job';
 import { ensureDefaultPlans } from './scripts/ensure-default-plans';
+import { ensureDefaultPermissions } from './scripts/ensure-default-permissions';
 
 const PORT = env.PORT;
 
@@ -24,10 +25,12 @@ const startServer = () => {
       await connectDB();
       logger.info('MongoDB connected successfully.');
 
-      // Self-healing: make sure at least the default subscription plans
-      // exist so onboarding and subscribe/renew flows never break just
-      // because nobody ran the seed script on this environment.
+      // Self-healing: make sure the default subscription plans AND default
+      // role permissions exist, so onboarding, subscribe/renew, and every
+      // permission-gated route never break just because nobody ran the
+      // seed script on this environment.
       await ensureDefaultPlans();
+      await ensureDefaultPermissions();
     } catch (err) {
       logger.error('MongoDB connection failed – retrying in 30s');
       setTimeout(() => connectDB(), 30000);
