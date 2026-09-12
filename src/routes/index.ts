@@ -23,6 +23,8 @@ import analyticsRoutes from '../core/analytics/analytics.routes';
 import supportRoutes from '../core/support/support.routes';
 import exportRoutes from '../core/export/export.routes';
 import staffRoutes from '../core/staff/staff.routes';
+import examRoutes from '../core/exams/exam.routes';
+import defaultersRoutes from '../core/defaulters/defaulters.routes';
 import { SchoolController } from '../core/schools/school.controller';
 import { authMiddleware, requireSchoolMembership, requireSchoolContext } from '../middleware/auth.middleware';
 import { requireActiveSubscription } from '../middleware/subscription.middleware';
@@ -31,7 +33,7 @@ import { checkEntitlement } from '../middleware/entitlement.middleware';
 const router = express.Router();
 
 // ============================================================
-// 1. PUBLIC ROUTES (no authentication required)
+// 1. PUBLIC ROUTES
 // ============================================================
 router.use('/auth', authRoutes);
 router.use('/webhooks', webhookRoutes);
@@ -40,13 +42,13 @@ router.get('/schools/ping', SchoolController.ping);
 router.post('/schools/onboard', SchoolController.onboard);
 
 // ============================================================
-// 2. PROTECTED ROUTES (authentication required)
+// 2. PROTECTED ROUTES
 // ============================================================
 router.use(authMiddleware);
 router.use('/platform', platformRoutes);
 
 // ============================================================
-// 3. SCHOOL ROUTES (require school context + active subscription)
+// 3. SCHOOL-SCOPED ROUTES
 // ============================================================
 router.use(requireSchoolMembership);
 router.use(requireSchoolContext);
@@ -63,11 +65,10 @@ router.use('/payments', paymentRoutes);
 router.use('/subscriptions', subscriptionRoutes);
 router.use('/results', resultRoutes);
 router.use('/attendance', attendanceRoutes);
+router.use('/exams', examRoutes);            // 👈 newly mounted
+router.use('/defaulters', defaultersRoutes); // 👈 newly mounted
 
-// Report card templates must be mounted BEFORE the main report-cards router
-// because both share the '/report-cards' prefix. The templates router's
-// static path ('/templates') must not be shadowed by the report-cards
-// router's '/:id' route.
+// Report card templates must come BEFORE /report-cards/:id.
 router.use('/report-cards/templates', reportCardTemplateRoutes);
 router.use('/report-cards', reportCardRoutes);
 
