@@ -4,7 +4,6 @@ import { SubscriptionPlan } from '../../models/SubscriptionPlan';
 import { ReportCardTemplate } from '../../models/ReportCardTemplate';
 import { Class } from '../../models/Class';
 import { Student } from '../../models/Student';
-import { Session } from '../../models/Session';
 import { Term } from '../../models/Term';
 import { Payment } from '../../models/Payment';
 import { Invoice } from '../../models/Invoice';
@@ -16,10 +15,15 @@ import logger from '../../config/logger';
 const TERM_SEQUENCE = ['First Term', 'Second Term', 'Third Term'];
 
 export class SchoolService {
+  // ==================================================================
+  // CREATE — with automatic trial subscription + default report card
+  // template. Called both by the admin route and by onboarding.
+  // ==================================================================
   static async create(data: any) {
     const school = new School(data);
     await school.save();
 
+    // 1. Trial subscription
     try {
       const starterPlan = await SubscriptionPlan.findOne({ name: 'Starter' });
       if (starterPlan) {
@@ -40,13 +44,19 @@ export class SchoolService {
           autoRenew: false,
         });
         await subscription.save();
+        logger.info(`Trial subscription created for school ${school._id}`);
       }
     } catch (error) {
       logger.error('Failed to create trial subscription:', error);
     }
 
+    // 2. Default report card template — without this, generateReportCard()
+    //    throws "template not found" for every fresh school.
     try {
-      const existing = await ReportCardTemplate.findOne({ schoolId: school._id, isDefault: true });
+      const existing = await ReportCardTemplate.findOne({
+        schoolId: school._id,
+        isDefault: true,
+      });
       if (!existing) {
         await ReportCardTemplate.create({
           schoolId: school._id,
@@ -57,11 +67,18 @@ export class SchoolService {
           isActive: true,
           isDefault: true,
           config: {
-            showLogo: true, showSchoolInfo: true, showStudentPhoto: true,
-            showAttendance: true, showClassAverage: true, showSubjectAverage: true,
-            showGrade: true, showRemark: true,
-            showTeacherComment: true, showPrincipalComment: true,
-            showSignature: true, showStamp: true,
+            showLogo: true,
+            showSchoolInfo: true,
+            showStudentPhoto: true,
+            showAttendance: true,
+            showClassAverage: true,
+            showSubjectAverage: true,
+            showGrade: true,
+            showRemark: true,
+            showTeacherComment: true,
+            showPrincipalComment: true,
+            showSignature: true,
+            showStamp: true,
             fields: [],
             gradingConfig: {
               gradingSystem: 'Standard',
@@ -76,6 +93,7 @@ export class SchoolService {
             },
           },
         });
+        logger.info(`Default report card template created for school ${school._id}`);
       }
     } catch (error) {
       logger.error('Failed to create default report card template:', error);
@@ -92,6 +110,9 @@ export class SchoolService {
     return school;
   }
 
+  // ==================================================================
+  // READ — cross-tenant scoped by caller role.
+  // ==================================================================
   static async getById(id: string, caller?: any) {
     let school;
     if (caller && caller.role !== 'SUPER_ADMIN') {
@@ -112,6 +133,10 @@ export class SchoolService {
     return School.find(safeQuery);
   }
 
+  // ==================================================================
+  // UPDATE — non-super-admins can only edit their own school, and can't
+  // touch billing/SMS/status fields.
+  // ==================================================================
   static async update(id: string, data: any, caller?: any) {
     if (caller && caller.role !== 'SUPER_ADMIN') {
       if (caller.schoolId?.toString() !== id) {
@@ -137,6 +162,11 @@ export class SchoolService {
     return school;
   }
 
+  // ==================================================================
+  // CLOSE TERM — advance First → Second → Third Term within the current
+  // session. Refuses on Third Term, telling the caller to create a new
+  // session instead.
+  // ==================================================================
   static async closeTerm(schoolId: string, actorId: string) {
     const school = await School.findById(schoolId);
     if (!school) throw new NotFoundError('School not found');
@@ -165,6 +195,7 @@ export class SchoolService {
       name: nextTermName,
     });
 
+    // Mark current term closed.
     currentTerm.isActive = false;
     await currentTerm.save();
 
@@ -196,6 +227,11 @@ export class SchoolService {
     };
   }
 
+  // ==================================================================
+  // SEED SAMPLE DATA — demo students, invoices, payments, and attendance
+  // for a new school that wants to explore the app before entering real
+  // data. Idempotent: skips if any student already exists.
+  // ==================================================================
   static async seedSampleData(schoolId: string) {
     const school = await School.findById(schoolId);
     if (!school) throw new NotFoundError('School not found');
@@ -216,8 +252,14 @@ export class SchoolService {
       throw new BadRequestError('School has no active session/term');
     }
 
-    const FIRST_NAMES = ['Adeola', 'Chidi', 'Funke', 'Emeka', 'Aisha', 'Tunde', 'Ngozi', 'Kemi', 'Yusuf', 'Bola'];
-    const LAST_NAMES = ['Okafor', 'Ibrahim', 'Adeyemi', 'Eze', 'Bello', 'Ojo', 'Nwosu', 'Adebayo', 'Salami', 'Olatunji'];
+    const FIRST_NAMES = [
+      'Adeola', 'Chidi', 'Funke', 'Emeka', 'Aisha',
+      'Tunde', 'Ngozi', 'Kemi', 'Yusuf', 'Bola',
+    ];
+    const LAST_NAMES = [
+      'Okafor', 'Ibrahim', 'Adeyemi', 'Eze', 'Bello',
+      'Ojo', 'Nwosu', 'Adebayo', 'Salami', 'Olatunji',
+    ];
     const GENDERS: Array<'MALE' | 'FEMALE'> = ['MALE', 'FEMALE'];
 
     const studentsToCreate: any[] = [];
@@ -233,7 +275,7 @@ export class SchoolService {
           lastName: last,
           admissionNumber: `SAMPLE-${String(seq).padStart(4, '0')}`,
           gender: GENDERS[seq % 2],
-          dateOfBirth: new Date(2015, (seq % 12), (seq % 27) + 1),
+          dateOfBirth: new Date(2015, seq % 12, (seq % 27) + 1),
           address: 'Sample address',
           classId: cls._id,
           status: 'ACTIVE',
@@ -244,11 +286,12 @@ export class SchoolService {
 
     const inserted = await Student.insertMany(studentsToCreate);
 
+    // Sample invoice + payment per student so fee dashboards have data.
     let invoicesCreated = 0;
     let paymentsCreated = 0;
 
     for (const s of inserted) {
-      const amount = 5_000_00;
+      const amount = 5_000_00; // ₦5,000 in kobo
       const invoice = await Invoice.create({
         schoolId,
         studentId: s._id,
@@ -279,6 +322,7 @@ export class SchoolService {
       paymentsCreated++;
     }
 
+    // Sample attendance for the last 7 days.
     const attendanceDocs: any[] = [];
     for (const s of inserted) {
       for (let d = 0; d < 7; d++) {
