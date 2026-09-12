@@ -60,4 +60,20 @@ export class AttendanceController {
       res.json({ success: true, data: records });
     } catch (error) { next(error); }
   }
+
+  // NEW: Whole-school attendance summary for today
+  static async getToday(req: Request, res: Response, next: NextFunction) {
+    try {
+      const summary = await AttendanceService.getTodaySummary(req.schoolId!);
+      res.json({ success: true, data: summary });
+    } catch (error) { next(error); }
+  }
+
+  // NEW: 7-day attendance rate trend for the whole school
+  static async getWeekly(req: Request, res: Response, next: NextFunction) {
+    try {
+      const summary = await AttendanceService.getWeeklySummary(req.schoolId!);
+      res.json({ success: true, data: summary });
+    } catch (error) { next(error); }
+  }
 }
