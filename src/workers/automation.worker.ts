@@ -1,5 +1,5 @@
 import { Worker } from 'bullmq';
-import { redis } from '../config/redis';
+import { redisForBullMQ } from '../config/redis';
 import logger from '../config/logger';
 import { Automation } from '../models/Automation';
 import { sendSMS } from '../integrations/sms/termii';
@@ -14,8 +14,6 @@ const worker = new Worker('schoolflow_automations', async (job) => {
   switch (action.type) {
     case 'SMS':
       if (action.config.to && action.config.message) {
-        // sendSMS expects: schoolId, to, message, senderId
-        // We need to get schoolId from data; we assume it's available
         const schoolId = data.schoolId;
         if (!schoolId) throw new Error('No schoolId for SMS');
         await sendSMS(schoolId, action.config.to, action.config.message, action.config.senderId);
@@ -27,16 +25,14 @@ const worker = new Worker('schoolflow_automations', async (job) => {
       }
       break;
     case 'IN_APP':
-      // ...
       break;
     case 'WEBHOOK':
-      // ...
       break;
     default:
       logger.warn(`Unknown action type: ${action.type}`);
   }
 }, {
-  connection: redis,
+  connection: redisForBullMQ,
   concurrency: 3,
   removeOnComplete: { count: 100 },
   removeOnFail: { count: 1000 },
