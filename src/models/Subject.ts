@@ -14,8 +14,6 @@ const SubjectSchema = new Schema<ISubject>(
   {
     schoolId: { type: Schema.Types.ObjectId, ref: 'School', required: true, index: true },
     name: { type: String, required: true, trim: true },
-    // Not required — the service auto-generates a code when missing.
-    // Kept unique per school via the compound index below.
     code: { type: String, trim: true, uppercase: true },
     description: String,
     isActive: { type: Boolean, default: true },
