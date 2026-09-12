@@ -6,7 +6,7 @@ import { School } from '../../models/School';
 import { BatchJob } from '../../models/BatchJob';
 import { NotFoundError, BadRequestError } from '../../utils/errors';
 import { acquireLock, releaseLock } from '../../config/mongoStore';
-import { emailQueue, pdfQueue, reportQueue } from '../../jobs/queues';
+import { emailQueue, pdfQueue, reportQueue, safeQueueAdd } from '../../jobs/queues';
 import logger from '../../config/logger';
 import { invalidateSubscriptionCache } from '../../middleware/subscription.middleware';
 import { cloudinary } from '../../integrations/storage/cloudinary';
@@ -17,7 +17,7 @@ import { env } from '../../config/env';
 
 export class PaymentService {
   // ------------------------------------------------------------------
-  // Existing methods
+  // Webhook processing
   // ------------------------------------------------------------------
 
   static async processPaystackWebhook(payload: any) {
@@ -97,18 +97,21 @@ export class PaymentService {
         invoice.status = invoice.balance <= 0 ? 'PAID' : 'PARTIALLY_PAID';
         await invoice.save({ session });
 
-        // Renew subscription if fully paid
+        // Renew subscription if fully paid — NOTE: this is a student-fee
+        // invoice. Renewing the school's SaaS subscription here is a
+        // business-logic concern; kept as-is to avoid changing behavior
+        // until you decide the correct rule.
         if (invoice.balance <= 0) {
           const subscription = await Subscription.findOne({
             schoolId: invoice.schoolId,
-            status: { $in: ['ACTIVE', 'EXPIRED', 'PAST_DUE'] }
+            status: { $in: ['ACTIVE', 'EXPIRED', 'PAST_DUE'] },
           });
           if (subscription) {
             const daysToAdd = subscription.durationDaysAtPurchase || 90;
             subscription.endDate = new Date(Date.now() + daysToAdd * 24 * 60 * 60 * 1000);
             subscription.status = 'ACTIVE';
             subscription.isTrial = false;
-            subscription.trialEndDate = undefined;   // instead of null
+            subscription.trialEndDate = undefined;
             await subscription.save({ session });
             await invalidateSubscriptionCache(invoice.schoolId.toString());
           }
@@ -122,8 +125,9 @@ export class PaymentService {
         session.endSession();
       }
 
-      await pdfQueue.add('generate-receipt', { paymentId: payment._id });
-      await emailQueue.add('send-payment-confirmation', { paymentId: payment._id });
+      // 🔴 safeQueueAdd prevents a dead Redis from hanging this webhook.
+      await safeQueueAdd(pdfQueue, 'generate-receipt', { paymentId: payment._id });
+      await safeQueueAdd(emailQueue, 'send-payment-confirmation', { paymentId: payment._id });
 
       logger.info(`Payment processed successfully for invoice ${invoiceNumber}`);
       return payment;
@@ -131,6 +135,10 @@ export class PaymentService {
       await releaseLock(lockKey, lockToken);
     }
   }
+
+  // ------------------------------------------------------------------
+  // Manual payments
+  // ------------------------------------------------------------------
 
   static async recordManualPayment(paymentData: any) {
     const { schoolId, invoiceId, amount, method, receivedBy, reference, proofFile } = paymentData;
@@ -158,7 +166,10 @@ export class PaymentService {
       proofUrl,
     });
     await payment.save();
-    await emailQueue.add('send-payment-approval-request', { paymentId: payment._id });
+
+    // 🔴 safeQueueAdd
+    await safeQueueAdd(emailQueue, 'send-payment-approval-request', { paymentId: payment._id });
+
     return payment;
   }
 
@@ -187,7 +198,7 @@ export class PaymentService {
       if (invoice.balance <= 0) {
         const subscription = await Subscription.findOne({
           schoolId: invoice.schoolId,
-          status: { $in: ['ACTIVE', 'EXPIRED', 'PAST_DUE'] }
+          status: { $in: ['ACTIVE', 'EXPIRED', 'PAST_DUE'] },
         });
         if (subscription) {
           const daysToAdd = subscription.durationDaysAtPurchase || 90;
@@ -208,16 +219,22 @@ export class PaymentService {
       session.endSession();
     }
 
-    await pdfQueue.add('generate-receipt', { paymentId: payment._id });
-    await emailQueue.add('send-payment-confirmation', { paymentId: payment._id });
+    // 🔴 safeQueueAdd
+    await safeQueueAdd(pdfQueue, 'generate-receipt', { paymentId: payment._id });
+    await safeQueueAdd(emailQueue, 'send-payment-confirmation', { paymentId: payment._id });
+
     return payment;
   }
+
+  // ------------------------------------------------------------------
+  // Reconciliation
+  // ------------------------------------------------------------------
 
   static async reconcilePendingPayments() {
     const pendingPayments = await Payment.find({
       status: 'PENDING',
       method: 'ONLINE',
-      createdAt: { $lt: new Date(Date.now() - 10 * 60 * 1000) }
+      createdAt: { $lt: new Date(Date.now() - 10 * 60 * 1000) },
     });
     let count = 0;
     for (const payment of pendingPayments) {
@@ -258,7 +275,9 @@ export class PaymentService {
     subscription.billingCycleAtPurchase = plan.billingCycle;
     const durationMap: Record<string, number> = { MONTHLY: 30, TERMLY: 90, ANNUAL: 365 };
     subscription.durationDaysAtPurchase = durationMap[plan.billingCycle] || 90;
-    subscription.endDate = new Date(Date.now() + subscription.durationDaysAtPurchase * 24 * 60 * 60 * 1000);
+    subscription.endDate = new Date(
+      Date.now() + subscription.durationDaysAtPurchase * 24 * 60 * 60 * 1000
+    );
     await subscription.save();
     await invalidateSubscriptionCache(schoolId);
 
@@ -303,16 +322,10 @@ export class PaymentService {
   }
 
   // ------------------------------------------------------------------
-  // Whole-school receipt batch generation.
+  // Whole-school receipt batch generation
   //
-  // No edit step — a receipt represents a completed transaction and
-  // should never be mutated after the fact. The flow is strictly:
-  // generate → progress-poll → print.
-  //
-  // Caveat (documented in printReceiptBatch): receipts are rendered by
-  // pdf.worker.ts on pdfQueue, which runs *after* this batch marks
-  // itself COMPLETED. printReceiptBatch compensates by polling briefly
-  // for receiptUrl before giving up.
+  // Flow: generate → progress-poll → print. A receipt represents a
+  // completed transaction, so there's no edit step.
   // ------------------------------------------------------------------
 
   static async generateReceiptsForSchool(schoolId: string, startedBy: string) {
@@ -330,7 +343,8 @@ export class PaymentService {
     });
     await batch.save();
 
-    await reportQueue.add('generate-school-receipts', {
+    // 🔴 safeQueueAdd
+    await safeQueueAdd(reportQueue, 'generate-school-receipts', {
       batchId: batch._id.toString(),
       schoolId,
     });
@@ -351,8 +365,6 @@ export class PaymentService {
 
     const paidInvoices = await Invoice.find({ schoolId, status: 'PAID' }).select('_id studentId');
 
-    // Process in small concurrent chunks — same 5-at-a-time default as
-    // the report card batch, tuned for typical Mongo/Cloudinary tiers.
     const CHUNK_SIZE = 5;
     for (let i = 0; i < paidInvoices.length; i += CHUNK_SIZE) {
       const chunk = paidInvoices.slice(i, i + CHUNK_SIZE);
@@ -364,9 +376,8 @@ export class PaymentService {
           }).sort({ confirmedAt: -1 });
           if (!payment) throw new Error('No confirmed payment found for invoice');
 
-          // Reuse the same pdfQueue job the webhook/approval flows use —
-          // receipt generation stays in exactly one place.
-          await pdfQueue.add('generate-receipt', { paymentId: payment._id });
+          // 🔴 safeQueueAdd
+          await safeQueueAdd(pdfQueue, 'generate-receipt', { paymentId: payment._id });
           return payment;
         })
       );
@@ -408,9 +419,6 @@ export class PaymentService {
       throw new BadRequestError('Batch has not finished processing yet');
     }
 
-    // receiptUrl is populated asynchronously by pdf.worker.ts *after*
-    // this batch flips to COMPLETED, so poll briefly rather than 400-ing
-    // on a request that's about to succeed. 15s bounded wait.
     const MAX_WAIT_MS = 15_000;
     const POLL_INTERVAL_MS = 1_000;
     const deadline = Date.now() + MAX_WAIT_MS;
