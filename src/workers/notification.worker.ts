@@ -1,11 +1,11 @@
 import { Worker } from 'bullmq';
-import { redis } from '../config/redis';
+import { redisForBullMQ } from '../config/redis';
 import logger from '../config/logger';
 
 const worker = new Worker('schoolflow_notifications', async (job) => {
   logger.info('Sending notification:', job.data);
 }, {
-  connection: redis,
+  connection: redisForBullMQ,
   concurrency: 5,
   removeOnComplete: { count: 100 },
   removeOnFail: { count: 1000 },
