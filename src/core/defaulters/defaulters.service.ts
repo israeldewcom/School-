@@ -1,6 +1,8 @@
 import { Student } from '../../models/Student';
 import { Invoice } from '../../models/Invoice';
 import { Payment } from '../../models/Payment';
+import { smsQueue, safeQueueAdd } from '../../jobs/queues';
+import logger from '../../config/logger';
 
 export class DefaultersService {
   // A "defaulter" is any active student whose outstanding balance across
@@ -60,6 +62,7 @@ export class DefaultersService {
         fees: {
           expected: totals.expected,
           paid: totals.paid,
+          owed: totals.expected - totals.paid,
           status: totals.paid >= totals.expected ? 'PAID'
             : totals.paid > 0 ? 'PARTIAL' : 'OUTSTANDING',
         },
@@ -67,10 +70,43 @@ export class DefaultersService {
     }
 
     // Sort by amount owed, highest first.
-    defaulters.sort((a, b) =>
-      (b.fees.expected - b.fees.paid) - (a.fees.expected - a.fees.paid)
-    );
+    defaulters.sort((a, b) => b.fees.owed - a.fees.owed);
 
     return defaulters;
+  }
+
+  // ------------------------------------------------------------------
+  // Queue an SMS reminder to every defaulter's guardian phone. Returns
+  // the count actually queued so the caller can report a real number
+  // instead of a hardcoded success message.
+  // ------------------------------------------------------------------
+  static async remindAll(schoolId: string) {
+    const defaulters = await this.getDefaulters(schoolId);
+    const withPhone = defaulters.filter((d) => !!d.guardianPhone);
+
+    let queued = 0;
+    for (const d of withPhone) {
+      const owed = (d.fees.owed / 100).toLocaleString('en-NG');
+      const message = `Reminder: ${d.fullName} has an outstanding balance of ₦${owed}. Please make payment at your earliest convenience.`;
+      const result = await safeQueueAdd(smsQueue, 'send-defaulter-reminder', {
+        schoolId,
+        studentId: d.id,
+        phone: d.guardianPhone,
+        message,
+      });
+      if (result) queued++;
+    }
+
+    if (queued < withPhone.length) {
+      logger.warn(
+        `remindAll: queued ${queued}/${withPhone.length} reminders for school ${schoolId} (Redis may be degraded)`
+      );
+    }
+
+    return {
+      totalDefaulters: defaulters.length,
+      withPhone: withPhone.length,
+      queued,
+    };
   }
 }
