@@ -65,10 +65,10 @@ router.use('/payments', paymentRoutes);
 router.use('/subscriptions', subscriptionRoutes);
 router.use('/results', resultRoutes);
 router.use('/attendance', attendanceRoutes);
-router.use('/exams', examRoutes);            // 👈 newly mounted
-router.use('/defaulters', defaultersRoutes); // 👈 newly mounted
+router.use('/exams', examRoutes);
+router.use('/defaulters', defaultersRoutes);
 
-// Report card templates must come BEFORE /report-cards/:id.
+// Templates BEFORE /report-cards/:id
 router.use('/report-cards/templates', reportCardTemplateRoutes);
 router.use('/report-cards', reportCardRoutes);
 
