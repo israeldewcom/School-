@@ -1,5 +1,5 @@
 import { Worker } from 'bullmq';
-import { redis } from '../config/redis';
+import { redisForBullMQ } from '../config/redis';
 import { PaymentService } from '../core/payments/payment.service';
 import logger from '../config/logger';
 
@@ -9,7 +9,7 @@ const worker = new Worker('schoolflow_reconciliation', async (job) => {
     logger.info(`Reconciled ${count} pending payments`);
   }
 }, {
-  connection: redis,
+  connection: redisForBullMQ,
   concurrency: 1,
   removeOnComplete: { count: 100 },
   removeOnFail: { count: 1000 },
