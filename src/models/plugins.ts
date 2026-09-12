@@ -4,9 +4,7 @@ import { Schema } from 'mongoose';
 //
 // Every document serialized to JSON now exposes `id` (from `_id`) so the
 // frontend can call `.id` on any object without worrying about which model
-// it came from. Also strips sensitive fields (`password`, `refreshTokens`,
-// `__v`) from every response — a defence-in-depth layer so a controller
-// that accidentally `select`s these can't leak them.
+// it came from. Also strips sensitive fields from every response.
 export const toJSONPlugin = (schema: Schema) => {
   schema.set('toJSON', {
     virtuals: true,
