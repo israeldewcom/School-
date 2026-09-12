@@ -4,14 +4,22 @@ import { Student } from '../../models/Student';
 import { Result } from '../../models/Result';
 import { Attendance } from '../../models/Attendance';
 import { BatchJob } from '../../models/BatchJob';
-import { pdfQueue, emailQueue, reportQueue } from '../../jobs/queues';
+import { pdfQueue, emailQueue, reportQueue, safeQueueAdd } from '../../jobs/queues';
 import { NotFoundError, BadRequestError } from '../../utils/errors';
 import { Class } from '../../models/Class';
 import { mergePDFsFromUrls } from '../../utils/pdfMerge';
 import logger from '../../config/logger';
 
 export class ReportCardService {
-  static async generateReportCard(studentId: string, sessionId: string, termId: string, templateId?: string) {
+  // ------------------------------------------------------------------
+  // Single report card
+  // ------------------------------------------------------------------
+  static async generateReportCard(
+    studentId: string,
+    sessionId: string,
+    termId: string,
+    templateId?: string
+  ) {
     const student = await Student.findById(studentId)
       .populate('classId', 'name')
       .select('firstName lastName admissionNumber schoolId classId photo');
@@ -54,13 +62,13 @@ export class ReportCardService {
     const attendancePercent = totalDays > 0 ? (att.present / totalDays) * 100 : 0;
 
     // Compute class average and position for this student
-    const classId = student.classId?._id?.toString() || student.classId?.toString();
+    const classId = (student.classId as any)?._id?.toString() || student.classId?.toString();
     const allResults = await Result.find({ classId, sessionId, termId }).populate('subjectId');
     const subjectMap = new Map<string, { total: number; count: number }>();
     let overallTotal = 0;
     let overallCount = 0;
     for (const r of allResults) {
-      const subjId = r.subjectId._id.toString();
+      const subjId = (r.subjectId as any)._id.toString();
       const total = r.total || 0;
       if (!subjectMap.has(subjId)) {
         subjectMap.set(subjId, { total: 0, count: 0 });
@@ -130,28 +138,40 @@ export class ReportCardService {
     });
     await reportCard.save();
 
-    await pdfQueue.add('generate-report-pdf', { reportCardId: reportCard._id });
+    // 🔴 safeQueueAdd
+    await safeQueueAdd(pdfQueue, 'generate-report-pdf', { reportCardId: reportCard._id });
 
     return reportCard;
   }
 
-  static async generateForClass(classId: string, sessionId: string, termId: string, templateId?: string) {
+  // ------------------------------------------------------------------
+  // Class batch (synchronous)
+  // ------------------------------------------------------------------
+  static async generateForClass(
+    classId: string,
+    sessionId: string,
+    termId: string,
+    templateId?: string
+  ) {
     const classDoc = await Class.findById(classId);
     if (!classDoc) throw new NotFoundError('Class not found');
 
     const students = await Student.find({ classId, status: 'ACTIVE' });
     const reports = [];
     for (const student of students) {
-      const report = await this.generateReportCard(student._id.toString(), sessionId, termId, templateId);
+      const report = await this.generateReportCard(
+        student._id.toString(),
+        sessionId,
+        termId,
+        templateId
+      );
       reports.push(report);
     }
     return reports;
   }
 
   // ------------------------------------------------------------------
-  // Whole-school batch generation. This queues a background job rather
-  // than generating synchronously — for a school with hundreds of
-  // students, doing this inline would time out the HTTP request.
+  // Whole-school batch (async via queue)
   // ------------------------------------------------------------------
   static async generateForSchool(
     schoolId: string,
@@ -176,7 +196,8 @@ export class ReportCardService {
     });
     await batch.save();
 
-    await reportQueue.add('generate-school-report-cards', {
+    // 🔴 safeQueueAdd
+    await safeQueueAdd(reportQueue, 'generate-school-report-cards', {
       batchId: batch._id.toString(),
       schoolId,
       sessionId,
@@ -206,9 +227,6 @@ export class ReportCardService {
 
     const students = await Student.find({ schoolId, status: 'ACTIVE' }).select('_id');
 
-    // Process in small concurrent chunks rather than one-at-a-time (slow)
-    // or all-at-once (risks overwhelming Cloudinary/Mongo). 5 at a time is
-    // a reasonable default for typical hosting tiers.
     const CHUNK_SIZE = 5;
     for (let i = 0; i < students.length; i += CHUNK_SIZE) {
       const chunk = students.slice(i, i + CHUNK_SIZE);
@@ -239,7 +257,9 @@ export class ReportCardService {
     batch.completedAt = new Date();
     await batch.save();
 
-    logger.info(`Report card batch ${batchId} completed: ${batch.successCount}/${batch.totalCount} succeeded`);
+    logger.info(
+      `Report card batch ${batchId} completed: ${batch.successCount}/${batch.totalCount} succeeded`
+    );
   }
 
   static async getBatch(batchId: string, schoolId: string) {
@@ -249,10 +269,7 @@ export class ReportCardService {
   }
 
   // ------------------------------------------------------------------
-  // Edit a report card before publishing. Since the PDF is generated
-  // ahead of time (for speed), editing the data afterward means the
-  // stored PDF is now stale — so we regenerate it here rather than
-  // leave a printed document that disagrees with the saved record.
+  // Editing / publishing
   // ------------------------------------------------------------------
   static async updateReportCard(id: string, schoolId: string, data: any) {
     const reportCard = await ReportCard.findOne({ _id: id, schoolId });
@@ -261,9 +278,14 @@ export class ReportCardService {
       throw new BadRequestError('Cannot edit a published report card');
     }
 
-    // Only allow editing the fields a reviewer would realistically touch —
-    // not identity/linkage fields like studentId or templateId.
-    const editable = ['results', 'teacherComment', 'principalComment', 'attendance', 'classAverage', 'position'];
+    const editable = [
+      'results',
+      'teacherComment',
+      'principalComment',
+      'attendance',
+      'classAverage',
+      'position',
+    ];
     for (const key of editable) {
       if (data[key] !== undefined) {
         (reportCard.data as any)[key] = data[key];
@@ -272,8 +294,8 @@ export class ReportCardService {
     reportCard.status = 'DRAFT';
     await reportCard.save();
 
-    // Regenerate the PDF so it reflects the edit before anyone publishes/prints it.
-    await pdfQueue.add('generate-report-pdf', { reportCardId: reportCard._id });
+    // 🔴 safeQueueAdd — regenerate the PDF so the edit is reflected.
+    await safeQueueAdd(pdfQueue, 'generate-report-pdf', { reportCardId: reportCard._id });
 
     return reportCard;
   }
@@ -288,12 +310,12 @@ export class ReportCardService {
     reportCard.publishedAt = new Date();
     await reportCard.save();
 
-    await emailQueue.add('send-report-card-notification', { reportCardId });
+    // 🔴 safeQueueAdd
+    await safeQueueAdd(emailQueue, 'send-report-card-notification', { reportCardId });
 
     return reportCard;
   }
 
-  // Bulk-publish every GENERATED report card in a batch after admin review.
   static async publishBatch(batchId: string, schoolId: string, _publishedBy: string) {
     const batch = await BatchJob.findOne({ _id: batchId, schoolId, type: 'REPORT_CARDS' });
     if (!batch) throw new NotFoundError('Batch not found');
@@ -301,20 +323,26 @@ export class ReportCardService {
       throw new BadRequestError('Batch has not finished processing yet');
     }
 
-    const reportCards = await ReportCard.find({ _id: { $in: batch.itemIds }, status: 'GENERATED' });
+    const reportCards = await ReportCard.find({
+      _id: { $in: batch.itemIds },
+      status: 'GENERATED',
+    });
     const published = [];
     for (const rc of reportCards) {
       rc.status = 'PUBLISHED';
       rc.publishedAt = new Date();
       await rc.save();
-      await emailQueue.add('send-report-card-notification', { reportCardId: rc._id });
+      // 🔴 safeQueueAdd
+      await safeQueueAdd(emailQueue, 'send-report-card-notification', { reportCardId: rc._id });
       published.push(rc._id);
     }
 
     return { publishedCount: published.length, totalInBatch: batch.itemIds.length };
   }
 
-  // Merge every generated PDF in a completed batch into one printable file.
+  // ------------------------------------------------------------------
+  // Batch PDF
+  // ------------------------------------------------------------------
   static async printBatch(batchId: string, schoolId: string): Promise<Buffer> {
     const batch = await BatchJob.findOne({ _id: batchId, schoolId, type: 'REPORT_CARDS' });
     if (!batch) throw new NotFoundError('Batch not found');
@@ -322,8 +350,10 @@ export class ReportCardService {
       throw new BadRequestError('Batch has not finished processing yet');
     }
 
-    const reportCards = await ReportCard.find({ _id: { $in: batch.itemIds }, pdfUrl: { $ne: null } })
-      .sort({ 'data.student.name': 1 });
+    const reportCards = await ReportCard.find({
+      _id: { $in: batch.itemIds },
+      pdfUrl: { $ne: null },
+    }).sort({ 'data.student.name': 1 });
     if (reportCards.length === 0) {
       throw new BadRequestError('No generated PDFs found in this batch');
     }
