@@ -18,9 +18,8 @@ router.post(
   StaffController.create
 );
 
-// Static-path routes MUST come before '/:id' or Express will treat "login"
-// as an :id param. Same class of bug that was causing /schools/current to
-// hit /schools/:id with id="current".
+// Static-path sub-routes MUST come before /:id (or at least before the PUT
+// that shares the /:id prefix). Express matches strictly by order here.
 router.post(
   '/:id/login',
   requirePermission('staff', 'write'),
