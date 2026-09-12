@@ -1,5 +1,5 @@
-import { Worker } from 'bullmq';
-import { redis } from '../config/redis';
+ import { Worker } from 'bullmq';
+import { redisForBullMQ } from '../config/redis';
 import logger from '../config/logger';
 import { cloudinary } from '../integrations/storage/cloudinary';
 import { renderReportCardPDF, renderReceiptPDF } from '../utils/pdfGenerator';
@@ -119,7 +119,7 @@ const worker = new Worker('schoolflow_pdf', async (job) => {
     await generateReceiptPdf(paymentId);
   }
 }, {
-  connection: redis,
+  connection: redisForBullMQ,
   concurrency: 2,
   removeOnComplete: { count: 100 },
   removeOnFail: { count: 1000 },
