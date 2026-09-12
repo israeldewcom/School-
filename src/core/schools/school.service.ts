@@ -1,6 +1,7 @@
 import { School } from '../../models/School';
 import { Subscription } from '../../models/Subscription';
 import { SubscriptionPlan } from '../../models/SubscriptionPlan';
+import { ReportCardTemplate } from '../../models/ReportCardTemplate';
 import { AuditLog } from '../../models/AuditLog';
 import { NotFoundError } from '../../utils/errors';
 import logger from '../../config/logger';
@@ -10,19 +11,14 @@ export class SchoolService {
     const school = new School(data);
     await school.save();
 
-    // Auto-create trial subscription
+    // 1. Trial subscription
     try {
       const starterPlan = await SubscriptionPlan.findOne({ name: 'Starter' });
       if (starterPlan) {
-        const durationMap: Record<string, number> = {
-          MONTHLY: 30,
-          TERMLY: 90,
-          ANNUAL: 365,
-        };
+        const durationMap: Record<string, number> = { MONTHLY: 30, TERMLY: 90, ANNUAL: 365 };
         const now = new Date();
         const trialDays = 7;
         const trialEnd = new Date(now.getTime() + trialDays * 24 * 60 * 60 * 1000);
-
         const subscription = new Subscription({
           schoolId: school._id,
           planId: starterPlan._id,
@@ -38,11 +34,59 @@ export class SchoolService {
         });
         await subscription.save();
         logger.info(`Trial subscription created for school ${school._id}`);
-      } else {
-        logger.warn('Starter plan not found – trial subscription not created');
       }
     } catch (error) {
       logger.error('Failed to create trial subscription:', error);
+    }
+
+    // 2. Default report card template — 👈 NEW
+    // Without this, generateReportCard() throws "template not found" for
+    // every fresh school, and the frontend shows a generic 500.
+    try {
+      const existing = await ReportCardTemplate.findOne({
+        schoolId: school._id,
+        isDefault: true,
+      });
+      if (!existing) {
+        await ReportCardTemplate.create({
+          schoolId: school._id,
+          name: 'Default Report Card',
+          description: 'Auto-generated default template',
+          version: 1,
+          layout: 'A4_PORTRAIT',
+          isActive: true,
+          isDefault: true,
+          config: {
+            showLogo: true,
+            showSchoolInfo: true,
+            showStudentPhoto: true,
+            showAttendance: true,
+            showClassAverage: true,
+            showSubjectAverage: true,
+            showGrade: true,
+            showRemark: true,
+            showTeacherComment: true,
+            showPrincipalComment: true,
+            showSignature: true,
+            showStamp: true,
+            fields: [],
+            gradingConfig: {
+              gradingSystem: 'Standard',
+              grades: [
+                { min: 75, max: 100, grade: 'A', remark: 'Excellent' },
+                { min: 65, max: 74, grade: 'B', remark: 'Very Good' },
+                { min: 55, max: 64, grade: 'C', remark: 'Good' },
+                { min: 45, max: 54, grade: 'D', remark: 'Fair' },
+                { min: 40, max: 44, grade: 'E', remark: 'Pass' },
+                { min: 0,  max: 39, grade: 'F', remark: 'Fail' },
+              ],
+            },
+          },
+        });
+        logger.info(`Default report card template created for school ${school._id}`);
+      }
+    } catch (error) {
+      logger.error('Failed to create default report card template:', error);
     }
 
     await AuditLog.create({
@@ -63,7 +107,8 @@ export class SchoolService {
   }
 
   static async getAll(query: any) {
-    return School.find(query);
+    const { schoolId: _ignored, ...safeQuery } = query || {};
+    return School.find(safeQuery);
   }
 
   static async update(id: string, data: any) {
