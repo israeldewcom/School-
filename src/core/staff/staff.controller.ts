@@ -48,7 +48,6 @@ export class StaffController {
     }
   }
 
-  // New: provisions a login for a staff member.
   static async createLogin(req: Request, res: Response, next: NextFunction) {
     try {
       const result = await StaffService.createLogin(
