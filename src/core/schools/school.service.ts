@@ -3,7 +3,7 @@ import { Subscription } from '../../models/Subscription';
 import { SubscriptionPlan } from '../../models/SubscriptionPlan';
 import { ReportCardTemplate } from '../../models/ReportCardTemplate';
 import { AuditLog } from '../../models/AuditLog';
-import { NotFoundError } from '../../utils/errors';
+import { NotFoundError, ForbiddenError, BadRequestError } from '../../utils/errors';
 import logger from '../../config/logger';
 
 export class SchoolService {
@@ -39,9 +39,7 @@ export class SchoolService {
       logger.error('Failed to create trial subscription:', error);
     }
 
-    // 2. Default report card template — 👈 NEW
-    // Without this, generateReportCard() throws "template not found" for
-    // every fresh school, and the frontend shows a generic 500.
+    // 2. Default Report Card template
     try {
       const existing = await ReportCardTemplate.findOne({
         schoolId: school._id,
@@ -100,24 +98,56 @@ export class SchoolService {
     return school;
   }
 
-  static async getById(id: string) {
-    const school = await School.findById(id);
+  // Only SUPER_ADMIN can look up an arbitrary school by id.
+  // Everyone else gets their own school — the passed id is ignored.
+  static async getById(id: string, caller?: any) {
+    let school;
+    if (caller && caller.role !== 'SUPER_ADMIN') {
+      school = await School.findById(caller.schoolId);
+      if (school && school._id.toString() !== id) {
+        // Caller asked for a different school — silently return their own.
+        return school;
+      }
+    } else {
+      school = await School.findById(id);
+    }
     if (!school) throw new NotFoundError('School not found');
     return school;
   }
 
-  static async getAll(query: any) {
+  static async getAll(query: any, caller?: any) {
     const { schoolId: _ignored, ...safeQuery } = query || {};
+
+    if (caller && caller.role !== 'SUPER_ADMIN') {
+      return School.find({ _id: caller.schoolId });
+    }
+
     return School.find(safeQuery);
   }
 
-  static async update(id: string, data: any) {
+  static async update(id: string, data: any, caller?: any) {
+    // Non-super-admins can only update their own school.
+    if (caller && caller.role !== 'SUPER_ADMIN') {
+      if (caller.schoolId?.toString() !== id) {
+        throw new ForbiddenError('You can only update your own school');
+      }
+      // Strip fields that must not be client-controlled.
+      delete data.subscriptionId;
+      delete data.smsBalance;
+      delete data.smsRate;
+      delete data.smsMonthlyUsage;
+      delete data.status;
+    }
+
     const school = await School.findByIdAndUpdate(id, data, { new: true });
     if (!school) throw new NotFoundError('School not found');
     return school;
   }
 
-  static async delete(id: string) {
+  static async delete(id: string, caller: any) {
+    if (caller?.role !== 'SUPER_ADMIN') {
+      throw new ForbiddenError('Only platform admins can delete schools');
+    }
     const school = await School.findByIdAndDelete(id);
     if (!school) throw new NotFoundError('School not found');
     return school;
