@@ -1,5 +1,5 @@
 import { Worker } from 'bullmq';
-import { redis } from '../config/redis';
+import { redisForBullMQ } from '../config/redis';
 import { sendEmail } from '../integrations/email/nodemailer';
 import logger from '../config/logger';
 
@@ -7,7 +7,7 @@ const worker = new Worker('schoolflow_email', async (job) => {
   const { to, subject, html, text } = job.data;
   await sendEmail(to, subject, html, text);
 }, {
-  connection: redis,
+  connection: redisForBullMQ,
   concurrency: 5,
   removeOnComplete: { count: 100 },
   removeOnFail: { count: 1000 },
