@@ -24,11 +24,11 @@ export class SchoolController {
   static async getSchools(req: Request, res: Response, next: NextFunction) {
     try {
       if (req.user.role !== 'SUPER_ADMIN') {
-        const school = await SchoolService.getById(req.schoolId!);
+        const school = await SchoolService.getById(req.schoolId!, req.user);
         res.json({ success: true, data: school });
         return;
       }
-      const schools = await SchoolService.getAll(req.query);
+      const schools = await SchoolService.getAll(req.query, req.user);
       res.json({ success: true, data: schools });
     } catch (error) { next(error); }
   }
@@ -39,21 +39,21 @@ export class SchoolController {
         res.status(404).json({ success: false, message: 'School not found' });
         return;
       }
-      const school = await SchoolService.getById(req.schoolId);
+      const school = await SchoolService.getById(req.schoolId, req.user);
       res.json({ success: true, data: school });
     } catch (error) { next(error); }
   }
 
   static async getSchool(req: Request, res: Response, next: NextFunction) {
     try {
-      const school = await SchoolService.getById(req.params.id);
+      const school = await SchoolService.getById(req.params.id, req.user);
       res.json({ success: true, data: school });
     } catch (error) { next(error); }
   }
 
   static async update(req: Request, res: Response, next: NextFunction) {
     try {
-      const school = await SchoolService.update(req.params.id, req.body);
+      const school = await SchoolService.update(req.params.id, req.body, req.user);
       res.json({ success: true, data: school });
     } catch (error) { next(error); }
   }
@@ -64,31 +64,20 @@ export class SchoolController {
         res.status(404).json({ success: false, message: 'School not found' });
         return;
       }
-      const school = await SchoolService.update(req.schoolId, req.body);
+      const school = await SchoolService.update(req.schoolId, req.body, req.user);
       res.json({ success: true, data: school });
     } catch (error) { next(error); }
   }
 
   static async delete(req: Request, res: Response, next: NextFunction) {
     try {
-      await SchoolService.delete(req.params.id);
+      await SchoolService.delete(req.params.id, req.user);
       res.json({ success: true, message: 'School deleted' });
     } catch (error) { next(error); }
   }
 
   // ------------------------------------------------------------------
   // ONBOARDING (public, no authentication)
-  //
-  // CRITICAL FIX: after creating the School, we now also create the real
-  // Session and Term documents. Previously the school was created with
-  // just the strings "2026/2027" and "First Term", so every downstream
-  // feature that needs an ObjectId (attendance, scores, invoices, report
-  // cards, fee structures) failed with "Academic session/term not
-  // configured" and there was no UI to fix it.
-  //
-  // The created Session/Term ObjectIds are written onto the School
-  // document as `currentSessionId` / `currentTermId` so the frontend can
-  // read them directly from GET /schools/current.
   // ------------------------------------------------------------------
   static async onboard(req: Request, res: Response) {
     try {
@@ -128,7 +117,6 @@ export class SchoolController {
       const sessionName = (session || '2026/2027').trim();
       const termName = (term || 'First Term').trim();
 
-      // 1. Create school (still uses the strings for the legacy fields).
       const school = await SchoolService.create({
         name: schoolName,
         schoolType: schoolType || 'Primary & Secondary',
@@ -146,10 +134,9 @@ export class SchoolController {
       });
       logger.info('School created:', school._id);
 
-      // 2. Create the real Session document.
       const now = new Date();
-      const sessionStart = new Date(now.getFullYear(), 8, 1);          // Sept 1 of current year
-      const sessionEnd = new Date(now.getFullYear() + 1, 6, 31);       // July 31 next year
+      const sessionStart = new Date(now.getFullYear(), 8, 1);
+      const sessionEnd = new Date(now.getFullYear() + 1, 6, 31);
       const sessionDoc = new Session({
         schoolId: school._id,
         name: sessionName,
@@ -160,7 +147,6 @@ export class SchoolController {
       await sessionDoc.save();
       logger.info('Session created:', sessionDoc._id);
 
-      // 3. Create the real Term document under that session.
       const termStart = new Date(now);
       const termEnd = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000);
       const termDoc = new Term({
@@ -174,13 +160,10 @@ export class SchoolController {
       await termDoc.save();
       logger.info('Term created:', termDoc._id);
 
-      // 4. Persist the ObjectIds on the school so the frontend can read them
-      //    from GET /schools/current without extra lookups.
       school.currentSessionId = sessionDoc._id.toString();
       school.currentTermId = termDoc._id.toString();
       await school.save();
 
-      // 5. Create owner user.
       const owner = new User({
         email: `${username}@school.local`,
         username,
@@ -194,7 +177,6 @@ export class SchoolController {
       await owner.save();
       logger.info('Owner created:', owner._id);
 
-      // 6. Create classes if provided.
       if (classes && Array.isArray(classes) && classes.length) {
         const classDocs = classes.map((c: any) => ({
           schoolId: school._id,
@@ -208,7 +190,6 @@ export class SchoolController {
         logger.info(`Created ${classDocs.length} classes`);
       }
 
-      // 7. Create a trial Subscription so subscription-gated features work.
       const defaultPlan =
         (await SubscriptionPlan.findOne({ name: 'Starter', isActive: true })) ||
         (await SubscriptionPlan.findOne({ isActive: true }));
@@ -217,7 +198,6 @@ export class SchoolController {
         const trialDays = 7;
         const trialEnd = new Date(now.getTime() + trialDays * 24 * 60 * 60 * 1000);
         const durationMap: Record<string, number> = { MONTHLY: 30, TERMLY: 90, ANNUAL: 365 };
-
         const subscription = new Subscription({
           schoolId: school._id,
           planId: defaultPlan._id,
@@ -235,10 +215,6 @@ export class SchoolController {
         school.subscriptionId = subscription._id.toString();
         await school.save();
         logger.info(`Trial subscription created for school ${school._id}`);
-      } else {
-        logger.warn(
-          `No SubscriptionPlan found — school ${school._id} onboarded without a subscription. Run the seed script.`
-        );
       }
 
       if (loadSample) {
