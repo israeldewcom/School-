@@ -21,6 +21,7 @@ export class StaffService {
   }
 
   static async update(id: string, schoolId: string, data: any) {
+    delete data.schoolId;
     const staff = await Staff.findOneAndUpdate({ _id: id, schoolId }, data, { new: true });
     if (!staff) throw new NotFoundError('Staff not found');
     return staff;
@@ -32,12 +33,6 @@ export class StaffService {
     return staff;
   }
 
-  // ==========================================================================
-  // createLogin — provisions a User account for a Staff member so they can
-  // log in. Previously this endpoint didn't exist and the frontend showed a
-  // "not yet available" toast. Now it creates a User bound to the same
-  // school with the role the caller chose.
-  // ==========================================================================
   static async createLogin(
     staffId: string,
     schoolId: string,
@@ -61,8 +56,6 @@ export class StaffService {
     const existing = await User.findOne({ username: data.username.trim() });
     if (existing) throw new BadRequestError('Username already taken');
 
-    // If a User already exists with this staff member's email, we can't
-    // create another (email is unique). Surface a clear message.
     const existingByEmail = await User.findOne({ email: staff.email });
     if (existingByEmail) {
       throw new BadRequestError(
@@ -73,7 +66,6 @@ export class StaffService {
     const user = new User({
       email: staff.email,
       username: data.username.trim(),
-      // The User pre-save hook hashes this — do NOT pre-hash here.
       password: data.password,
       firstName: staff.firstName,
       lastName: staff.lastName,
