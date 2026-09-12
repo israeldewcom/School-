@@ -3,11 +3,36 @@ import { NotFoundError, BadRequestError } from '../../utils/errors';
 
 export class SubjectService {
   static async create(data: any) {
-    const existing = await Subject.findOne({ schoolId: data.schoolId, code: data.code });
+    // Auto-generate a code if the caller didn't supply one. Previously
+    // the frontend sent `code: undefined`, which failed Mongoose's
+    // `required: true` validation and surfaced as a generic 500.
+    if (!data.code || String(data.code).trim() === '') {
+      data.code = SubjectService.generateCode(data.name);
+    }
+
+    const existing = await Subject.findOne({
+      schoolId: data.schoolId,
+      code: data.code,
+    });
     if (existing) throw new BadRequestError('Subject code already exists');
+
     const subject = new Subject(data);
     await subject.save();
     return subject;
+  }
+
+  private static generateCode(name: string): string {
+    // "Mathematics" → "MAT", "Basic Science" → "BASSCI"
+    const cleaned = String(name || '').replace(/[^a-zA-Z0-9 ]/g, '').trim();
+    if (!cleaned) return `SUB${Date.now().toString(36).toUpperCase()}`;
+    const parts = cleaned.split(/\s+/);
+    if (parts.length === 1) {
+      // First 3 letters + a 3-digit suffix to avoid collisions.
+      const prefix = parts[0].substring(0, 3).toUpperCase();
+      return `${prefix}${Math.floor(100 + Math.random() * 900)}`;
+    }
+    const acronym = parts.map((p) => p[0]).join('').toUpperCase();
+    return `${acronym}${Math.floor(10 + Math.random() * 90)}`;
   }
 
   static async getById(id: string, schoolId: string) {
@@ -17,7 +42,8 @@ export class SubjectService {
   }
 
   static async getAll(schoolId: string, query: any) {
-    return Subject.find({ schoolId, ...query });
+    const { schoolId: _ignored, ...safeQuery } = query || {};
+    return Subject.find({ ...safeQuery, schoolId });
   }
 
   static async update(id: string, schoolId: string, data: any) {
