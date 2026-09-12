@@ -2,18 +2,16 @@ import { User } from '../models/User';
 import { SubscriptionPlan } from '../models/SubscriptionPlan';
 import { Permission } from '../models/Permission';
 import { connectDB } from '../config/database';
-import argon2 from 'argon2';
 import logger from '../config/logger';
 import { env } from '../config/env';
 
 (async () => {
   await connectDB();
 
-  // Plans (prices in kobo, updated to match frontend)
   const plans = [
     {
       name: 'Starter',
-      price: 2000000, // ₦20,000
+      price: 2000000,
       currency: 'NGN',
       billingCycle: 'TERMLY',
       entitlements: {
@@ -31,7 +29,7 @@ import { env } from '../config/env';
     },
     {
       name: 'Growth',
-      price: 3000000, // ₦30,000
+      price: 3000000,
       currency: 'NGN',
       billingCycle: 'TERMLY',
       entitlements: {
@@ -49,7 +47,7 @@ import { env } from '../config/env';
     },
     {
       name: 'Professional',
-      price: 3500000, // ₦35,000 (custom)
+      price: 3500000,
       currency: 'NGN',
       billingCycle: 'TERMLY',
       entitlements: {
@@ -76,11 +74,18 @@ import { env } from '../config/env';
   }
   logger.info('Subscription plans seeded');
 
-  // Permissions
   const rolePermissions = [
     { role: 'SUPER_ADMIN', permissions: ['*:*'] },
     { role: 'SCHOOL_OWNER', permissions: ['*:*'] },
-    { role: 'ACCOUNTANT', permissions: ['fees:read', 'fees:write', 'invoices:read', 'invoices:write', 'payments:read', 'payments:write', 'payments:approve', 'reports:finance'] },
+    {
+      role: 'ACCOUNTANT',
+      permissions: [
+        'fees:read', 'fees:write',
+        'invoices:read', 'invoices:write',
+        'payments:read', 'payments:write', 'payments:approve',
+        'reports:finance',
+      ],
+    },
     { role: 'TEACHER', permissions: ['students:read', 'results:write', 'attendance:write', 'classes:read'] },
     { role: 'STAFF', permissions: ['students:read', 'classes:read'] },
     { role: 'PARENT', permissions: ['students:read', 'payments:read', 'results:read', 'attendance:read'] },
@@ -95,24 +100,27 @@ import { env } from '../config/env';
   }
   logger.info('Permissions seeded');
 
-  // Super admin
+  // Super admin — DO NOT pre-hash. The User model's pre-save hook hashes.
   const adminEmail = env.ADMIN_EMAIL;
   const existingAdmin = await User.findOne({ email: adminEmail });
   if (!existingAdmin) {
     const password = Math.random().toString(36).slice(-12) + 'A1!';
-    const hashed = await argon2.hash(password);
     await User.create({
       email: adminEmail,
-      password: hashed,
+      username: 'admin',
+      password,             // plain — the hook hashes
       firstName: 'Super',
       lastName: 'Admin',
       role: 'SUPER_ADMIN',
       isActive: true,
     });
-    logger.info(`Super admin created: ${adminEmail}, password: ${password} (please change immediately)`);
+    logger.info(`Super admin created: ${adminEmail}, password: ${password} (save this!)`);
   } else {
     logger.info('Super admin already exists');
   }
 
-  process.exit();
-})();
+  process.exit(0);
+})().catch((err) => {
+  logger.error('Seed failed:', err);
+  process.exit(1);
+});
