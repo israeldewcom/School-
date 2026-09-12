@@ -8,9 +8,9 @@ export interface IFeeStructure extends Document {
   feeItems: Array<{
     categoryId?: mongoose.Types.ObjectId;
     description: string;
-    amount: number; // kobo
+    amount: number;
   }>;
-  totalAmount: number; // kobo
+  totalAmount: number;
   isActive: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -24,9 +24,6 @@ const FeeStructureSchema = new Schema<IFeeStructure>(
     classId: { type: Schema.Types.ObjectId, ref: 'Class', required: true },
     feeItems: [
       {
-        // 👇 was `required: true`. Now optional so a school can build a
-        // fee structure before creating categories. When the client sends
-        // an empty string, we normalize to undefined so Mongoose ignores it.
         categoryId: { type: Schema.Types.ObjectId, ref: 'FeeCategory' },
         description: { type: String, required: true, trim: true },
         amount: { type: Number, required: true, min: 0 },
@@ -38,8 +35,7 @@ const FeeStructureSchema = new Schema<IFeeStructure>(
   { timestamps: true }
 );
 
-// Normalize empty-string categoryId to undefined before validation so
-// Mongoose doesn't try to cast "" to an ObjectId.
+// Normalize empty-string categoryId to undefined before validation.
 FeeStructureSchema.pre('validate', function (next) {
   if (Array.isArray(this.feeItems)) {
     for (const item of this.feeItems) {
