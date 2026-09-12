@@ -1,16 +1,68 @@
 import express from 'express';
 import { SchoolController } from './school.controller';
 import { requirePermission } from '../../middleware/permission.middleware';
+import { validate } from '../../middleware/validation.middleware';
+import {
+  createSchoolSchema,
+  updateSchoolSchema,
+  listSchoolsQuerySchema,
+  schoolIdParamSchema,
+} from './school.validator';
 
 const router = express.Router();
 
-// All routes here are protected by the parent index.ts middleware
-router.get('/', requirePermission('school', 'read'), SchoolController.getSchools);
-router.get('/current', requirePermission('school', 'read'), SchoolController.getCurrentSchool);
-router.get('/:id', requirePermission('school', 'read'), SchoolController.getSchool);
-router.post('/', requirePermission('school', 'write'), SchoolController.create);
-router.put('/:id', requirePermission('school', 'write'), SchoolController.update);
-router.put('/current', requirePermission('school', 'write'), SchoolController.updateCurrent);
-router.delete('/:id', requirePermission('school', 'delete'), SchoolController.delete);
+// ================================================================
+// ORDER MATTERS. Static paths MUST come before /:id params, or Express
+// matches "current" as an :id and Mongoose CastErrors on the lookup.
+// ================================================================
+
+router.get(
+  '/',
+  requirePermission('school', 'read'),
+  validate(listSchoolsQuerySchema),
+  SchoolController.getSchools
+);
+
+router.get(
+  '/current',
+  requirePermission('school', 'read'),
+  SchoolController.getCurrentSchool
+);
+
+router.put(
+  '/current',
+  requirePermission('school', 'write'),
+  validate(updateSchoolSchema),
+  SchoolController.updateCurrent
+);
+
+router.post(
+  '/',
+  requirePermission('school', 'write'),
+  validate(createSchoolSchema),
+  SchoolController.create
+);
+
+router.get(
+  '/:id',
+  requirePermission('school', 'read'),
+  validate(schoolIdParamSchema),
+  SchoolController.getSchool
+);
+
+router.put(
+  '/:id',
+  requirePermission('school', 'write'),
+  validate(schoolIdParamSchema),
+  validate(updateSchoolSchema),
+  SchoolController.update
+);
+
+router.delete(
+  '/:id',
+  requirePermission('school', 'delete'),
+  validate(schoolIdParamSchema),
+  SchoolController.delete
+);
 
 export default router;
