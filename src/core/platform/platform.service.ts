@@ -1,4 +1,3 @@
-import mongoose from 'mongoose';
 import { School } from '../../models/School';
 import { Subscription } from '../../models/Subscription';
 import { SubscriptionPlan } from '../../models/SubscriptionPlan';
