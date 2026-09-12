@@ -1,6 +1,6 @@
 import { Automation } from '../../models/Automation';
 import { Invoice } from '../../models/Invoice';
-import { automationQueue } from '../../jobs/queues';
+import { automationQueue, safeQueueAdd } from '../../jobs/queues';
 import { NotFoundError } from '../../utils/errors';
 import jsonLogic from 'json-logic-js';
 import logger from '../../config/logger';
@@ -19,7 +19,8 @@ export class AutomationService {
   }
 
   static async getAll(schoolId: string, query: any) {
-    return Automation.find({ schoolId, ...query });
+    const { schoolId: _ignored, ...safeQuery } = query || {};
+    return Automation.find({ ...safeQuery, schoolId });
   }
 
   static async update(id: string, schoolId: string, data: any) {
@@ -58,6 +59,7 @@ export class AutomationService {
       isEnabled: true,
       schoolId: data.schoolId,
     });
+
     for (const auto of automations) {
       let shouldExecute = true;
       if (auto.condition) {
@@ -69,9 +71,11 @@ export class AutomationService {
           shouldExecute = false;
         }
       }
+
       if (shouldExecute) {
         for (const action of auto.actions) {
-          await automationQueue.add('automation-action', {
+          // 🔴 safeQueueAdd
+          await safeQueueAdd(automationQueue, 'automation-action', {
             automationId: auto._id,
             action,
             data,
