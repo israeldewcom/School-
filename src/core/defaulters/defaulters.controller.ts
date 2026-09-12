@@ -10,4 +10,13 @@ export class DefaultersController {
       next(error);
     }
   }
+
+  static async remindAll(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await DefaultersService.remindAll(req.schoolId!);
+      res.json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
 }
