@@ -1,26 +1,32 @@
 import { Queue } from 'bullmq';
-import { redis } from '../config/redis';
+import { redisForBullMQ } from '../config/redis';
 import logger from '../config/logger';
 
-export const smsQueue = new Queue('schoolflow_sms', { connection: redis });
-export const emailQueue = new Queue('schoolflow_email', { connection: redis });
-export const pdfQueue = new Queue('schoolflow_pdf', { connection: redis });
-export const paymentQueue = new Queue('schoolflow_payments', { connection: redis });
-export const automationQueue = new Queue('schoolflow_automations', { connection: redis });
-export const reportQueue = new Queue('schoolflow_reports', { connection: redis });
-export const notificationQueue = new Queue('schoolflow_notifications', { connection: redis });
-export const reconciliationQueue = new Queue('schoolflow_reconciliation', { connection: redis });
-export const expiryQueue = new Queue('schoolflow_expiry', { connection: redis });
+// ============================================================================
+// QUEUES
+// ============================================================================
+// All Queue instances use redisForBullMQ — a dedicated connection with
+// maxRetriesPerRequest: null, which BullMQ hard-requires. Passing the
+// app-level `redis` client here causes this crash at startup:
+//
+//   Error: BullMQ: Your redis options maxRetriesPerRequest must be null.
+
+export const smsQueue = new Queue('schoolflow_sms', { connection: redisForBullMQ });
+export const emailQueue = new Queue('schoolflow_email', { connection: redisForBullMQ });
+export const pdfQueue = new Queue('schoolflow_pdf', { connection: redisForBullMQ });
+export const paymentQueue = new Queue('schoolflow_payments', { connection: redisForBullMQ });
+export const automationQueue = new Queue('schoolflow_automations', { connection: redisForBullMQ });
+export const reportQueue = new Queue('schoolflow_reports', { connection: redisForBullMQ });
+export const notificationQueue = new Queue('schoolflow_notifications', { connection: redisForBullMQ });
+export const reconciliationQueue = new Queue('schoolflow_reconciliation', { connection: redisForBullMQ });
+export const expiryQueue = new Queue('schoolflow_expiry', { connection: redisForBullMQ });
 
 // ============================================================================
-// safeQueueAdd — the reason this exists
+// safeQueueAdd
 // ============================================================================
-// BullMQ's queue.add() returns a promise that resolves once Redis has
-// acknowledged the job. When Redis is unreachable, that promise can hang
-// forever — which means the HTTP request that's awaiting it never returns
-// either. This wrapper races the queue.add() against a 3-second timer and
-// resolves to null on timeout. The job is lost, but the caller's response
-// goes out. Callers should treat null as "job not queued" and continue.
+// Races queue.add() against a short timeout so a slow or unreachable Redis
+// can't hang the HTTP request that's awaiting the enqueue. Callers must
+// treat null as "job not queued" and continue.
 export const safeQueueAdd = async <T = any>(
   queue: Queue,
   jobName: string,
