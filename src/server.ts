@@ -1,6 +1,6 @@
 // src/server.ts
 
-import './bootstrap';   // 👈 MUST be first. Registers mongoose plugins.
+import './bootstrap';   // MUST be first. Registers mongoose plugins.
 
 import app from './app';
 import logger from './config/logger';
