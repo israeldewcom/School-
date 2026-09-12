@@ -1,5 +1,5 @@
 import { Worker } from 'bullmq';
-import { redis } from '../config/redis';
+import { redisForBullMQ } from '../config/redis';
 import { checkExpiredSubscriptions } from '../jobs/expiry.job';
 import logger from '../config/logger';
 
@@ -8,7 +8,7 @@ const worker = new Worker('schoolflow_expiry', async (job) => {
     await checkExpiredSubscriptions();
   }
 }, {
-  connection: redis,
+  connection: redisForBullMQ,
   concurrency: 1,
   removeOnComplete: { count: 100 },
   removeOnFail: { count: 1000 },
