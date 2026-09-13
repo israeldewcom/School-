@@ -1,10 +1,7 @@
+// src/middleware/error.middleware.ts
 import { Request, Response, NextFunction } from 'express';
-import mongoose from 'mongoose';
 import logger from '../config/logger';
 
-// Custom application errors. If you already have these in
-// src/utils/errors.ts, keep those and just import them here — the
-// class shapes below match what the rest of the codebase expects.
 export class AppError extends Error {
   constructor(public message: string, public statusCode: number = 500, public code?: string) {
     super(message);
@@ -28,16 +25,11 @@ export class ConflictError extends AppError {
   constructor(message: string) { super(message, 409); }
 }
 
-// Maps Mongoose / Mongo / JWT errors to a proper HTTP status and a
-// clean message. This is the single place where "server crashed with
-// a 500" gets converted into "your input was wrong, fix it".
 function normalizeError(err: any): { status: number; message: string; details?: any[] } {
   if (err instanceof AppError) {
     return { status: err.statusCode, message: err.message };
   }
 
-  // Mongoose cast error (e.g. passing "" or "abc" where an ObjectId
-  // is expected). Was showing as 500 before — now 400.
   if (err?.name === 'CastError') {
     const field = err.path || 'field';
     const value = err.value === '' ? '(empty string)' : JSON.stringify(err.value);
@@ -47,8 +39,6 @@ function normalizeError(err: any): { status: number; message: string; details?: 
     };
   }
 
-  // Mongoose validation error (required field missing, enum mismatch,
-  // min/max violated). Was 500 — now 400 with per-field details.
   if (err?.name === 'ValidationError') {
     const details = Object.values(err.errors || {}).map((e: any) => ({
       path: e.path ? [e.path] : undefined,
@@ -58,7 +48,6 @@ function normalizeError(err: any): { status: number; message: string; details?: 
     return { status: 400, message: first, details };
   }
 
-  // Duplicate key (unique index violation).
   if (err?.code === 11000) {
     const field = Object.keys(err.keyValue || {})[0] || 'field';
     return {
@@ -67,7 +56,6 @@ function normalizeError(err: any): { status: number; message: string; details?: 
     };
   }
 
-  // JWT errors.
   if (err?.name === 'JsonWebTokenError') {
     return { status: 401, message: 'Invalid authentication token.' };
   }
@@ -75,7 +63,6 @@ function normalizeError(err: any): { status: number; message: string; details?: 
     return { status: 401, message: 'Session expired. Please log in again.' };
   }
 
-  // Body-parser / JSON parse errors.
   if (err?.type === 'entity.parse.failed') {
     return { status: 400, message: 'Malformed JSON in request body.' };
   }
@@ -83,15 +70,12 @@ function normalizeError(err: any): { status: number; message: string; details?: 
     return { status: 413, message: 'Request body is too large.' };
   }
 
-  // Fallback — genuinely unknown. Log it so ops can investigate, but
-  // never leak the raw stack to the client.
   return { status: 500, message: 'Something went wrong on our end. Please try again.' };
 }
 
 export function errorHandler(err: any, req: Request, res: Response, _next: NextFunction) {
   const { status, message, details } = normalizeError(err);
 
-  // Log only 5xx at error level; 4xx is normal client behavior.
   if (status >= 500) {
     logger.error(`${req.method} ${req.originalUrl} → ${status}: ${err.message}`, {
       stack: err.stack,
@@ -110,7 +94,6 @@ export function errorHandler(err: any, req: Request, res: Response, _next: NextF
   });
 }
 
-// 404 catch-all for unmatched routes. Register this AFTER all routers.
 export function notFoundHandler(req: Request, res: Response) {
   res.status(404).json({
     success: false,
