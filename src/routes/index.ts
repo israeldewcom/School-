@@ -42,7 +42,7 @@ router.get('/schools/ping', SchoolController.ping);
 router.post('/schools/onboard', SchoolController.onboard);
 
 // ============================================================
-// 2. PROTECTED ROUTES
+// 2. PROTECTED (AUTHENTICATED) ROUTES
 // ============================================================
 router.use(authMiddleware);
 router.use('/platform', platformRoutes);
@@ -68,7 +68,7 @@ router.use('/attendance', attendanceRoutes);
 router.use('/exams', examRoutes);
 router.use('/defaulters', defaultersRoutes);
 
-// Templates BEFORE /report-cards/:id
+// Report-card templates must come BEFORE /report-cards/:id.
 router.use('/report-cards/templates', reportCardTemplateRoutes);
 router.use('/report-cards', reportCardRoutes);
 
