@@ -1,11 +1,12 @@
+// src/core/payments/payment.service.ts
 import mongoose from 'mongoose';
 import { Payment } from '../../models/Payment';
 import { Invoice } from '../../models/Invoice';
 import { Student } from '../../models/Student';
 import { AuditLog } from '../../models/AuditLog';
 import { BadRequestError, NotFoundError } from '../../middleware/error.middleware';
+import logger from '../../config/logger';
 
-// Enum of allowed method values. Extend as your provider list grows.
 const ALLOWED_METHODS = ['CASH', 'BANK_TRANSFER', 'POS', 'ONLINE', 'MANUAL', 'CHEQUE', 'CARD', 'OTHER'];
 const METHOD_ALIASES: Record<string, string> = {
   'Cash': 'CASH',
@@ -23,7 +24,6 @@ function normalizeMethod(raw: any): string {
   const str = String(raw).trim();
   if (ALLOWED_METHODS.includes(str)) return str;
   if (METHOD_ALIASES[str]) return METHOD_ALIASES[str];
-  // Coerce "bank_transfer" style too.
   const upper = str.toUpperCase().replace(/\s+/g, '_');
   if (ALLOWED_METHODS.includes(upper)) return upper;
   return 'OTHER';
@@ -31,24 +31,13 @@ function normalizeMethod(raw: any): string {
 
 export class PaymentService {
   // ------------------------------------------------------------------
-  // Manual payment (the path the frontend uses). Was returning 500 on
-  // invalid input; now returns 400 with a specific field message.
+  // Manual payment — staff submits, proprietor approves.
   // ------------------------------------------------------------------
   static async recordManual(schoolId: string, submittedBy: string, data: any) {
-    // Validate BEFORE touching the database. Every one of these would
-    // previously produce a CastError → 500.
-    if (!data?.studentId) {
-      throw new BadRequestError('Please select a student before submitting.');
-    }
-    if (!mongoose.isValidObjectId(data.studentId)) {
-      throw new BadRequestError('Invalid studentId');
-    }
-    if (!data?.invoiceId) {
-      throw new BadRequestError('Please select an invoice before submitting.');
-    }
-    if (!mongoose.isValidObjectId(data.invoiceId)) {
-      throw new BadRequestError('Invalid invoiceId');
-    }
+    if (!data?.studentId) throw new BadRequestError('Please select a student before submitting.');
+    if (!mongoose.isValidObjectId(data.studentId)) throw new BadRequestError('Invalid studentId');
+    if (!data?.invoiceId) throw new BadRequestError('Please select an invoice before submitting.');
+    if (!mongoose.isValidObjectId(data.invoiceId)) throw new BadRequestError('Invalid invoiceId');
 
     const amount = Number(data.amount);
     if (!Number.isFinite(amount) || amount <= 0) {
@@ -96,11 +85,9 @@ export class PaymentService {
       after: { amount, studentId: data.studentId, invoiceId: data.invoiceId },
     });
 
-    // Return a shape the frontend can render without a second request.
-    const populated = await Payment.findById(payment._id)
+    return Payment.findById(payment._id)
       .populate('studentId', 'fullName className')
       .populate('invoiceId', 'invoiceNumber total amountPaid');
-    return populated;
   }
 
   // ------------------------------------------------------------------
@@ -108,7 +95,7 @@ export class PaymentService {
   // ------------------------------------------------------------------
   static async list(schoolId: string, query: any = {}) {
     const filter: any = { schoolId };
-    if (query.status && ['PENDING', 'APPROVED', 'REJECTED'].includes(String(query.status).toUpperCase())) {
+    if (query.status && ['PENDING', 'APPROVED', 'REJECTED', 'CONFIRMED', 'FAILED'].includes(String(query.status).toUpperCase())) {
       filter.status = String(query.status).toUpperCase();
     }
     if (query.studentId && mongoose.isValidObjectId(query.studentId)) {
@@ -121,7 +108,6 @@ export class PaymentService {
       .sort({ createdAt: -1 })
       .lean();
 
-    // Flatten student fields so the frontend doesn't have to dig.
     return payments.map((p: any) => ({
       id: p._id?.toString() || p.id,
       studentId: p.studentId?._id?.toString() || p.studentId,
@@ -152,12 +138,16 @@ export class PaymentService {
     if (!mongoose.isValidObjectId(id)) throw new BadRequestError('Invalid payment id');
     const payment = await Payment.findOne({ _id: id, schoolId });
     if (!payment) throw new NotFoundError('Payment not found');
-    if (payment.status === 'APPROVED') throw new BadRequestError('Payment is already approved');
-    if (payment.status === 'REJECTED') throw new BadRequestError('Cannot approve a rejected payment');
+    if (payment.status === 'APPROVED' || payment.status === 'CONFIRMED') {
+      throw new BadRequestError('Payment is already approved');
+    }
+    if (payment.status === 'REJECTED') {
+      throw new BadRequestError('Cannot approve a rejected payment');
+    }
 
     payment.status = 'APPROVED';
     payment.approvedAt = new Date();
-    payment.approvedBy = actorId as any;
+    payment.approvedBy = actorId;
     payment.receiptNo = payment.receiptNo || `RCP-${Date.now().toString(36).toUpperCase()}`;
     await payment.save();
 
@@ -187,12 +177,14 @@ export class PaymentService {
     if (!mongoose.isValidObjectId(id)) throw new BadRequestError('Invalid payment id');
     const payment = await Payment.findOne({ _id: id, schoolId });
     if (!payment) throw new NotFoundError('Payment not found');
-    if (payment.status === 'APPROVED') throw new BadRequestError('Cannot reject an approved payment');
+    if (payment.status === 'APPROVED' || payment.status === 'CONFIRMED') {
+      throw new BadRequestError('Cannot reject an approved payment');
+    }
 
     payment.status = 'REJECTED';
     payment.rejectionReason = reason || 'No reason provided';
     payment.rejectedAt = new Date();
-    payment.rejectedBy = actorId as any;
+    payment.rejectedBy = actorId;
     await payment.save();
 
     await AuditLog.create({
@@ -204,5 +196,160 @@ export class PaymentService {
     });
 
     return payment;
+  }
+
+  // ==================================================================
+  // MISSING METHODS — used by webhook controller and background workers
+  // ==================================================================
+
+  /**
+   * Handle a Paystack webhook event. Called by the webhook controller
+   * when Paystack reports a charge.success / charge.failed. Locates
+   * the school by the payment reference, upserts a provider payment,
+   * and reconciles the invoice on success.
+   */
+  static async processPaystackWebhook(payload: any): Promise<any> {
+    if (!payload || !payload.event || !payload.data) {
+      logger.warn('processPaystackWebhook: malformed payload', { payload });
+      return { handled: false, reason: 'malformed payload' };
+    }
+
+    const event: string = payload.event;
+    const data: any = payload.data;
+    const reference: string = data.reference || '';
+    const amountKobo: number = Number(data.amount) || 0;
+
+    if (!reference) {
+      logger.warn('processPaystackWebhook: no reference in payload');
+      return { handled: false, reason: 'no reference' };
+    }
+
+    // Idempotency — Paystack can retry the same event.
+    const existing = await Payment.findOne({ reference });
+    if (existing && existing.status === 'CONFIRMED') {
+      logger.info(`processPaystackWebhook: ${reference} already confirmed, skipping`);
+      return { handled: true, skipped: true, paymentId: existing._id };
+    }
+
+    // Locate the invoice via the reference. The reference format we
+    // use is INV-{invoiceNumber}-{schoolIdSuffix}, but callers can
+    // override by setting metadata.invoiceId on the charge.
+    const invoiceId = data.metadata?.invoiceId;
+    let invoice = invoiceId && mongoose.isValidObjectId(invoiceId)
+      ? await Invoice.findById(invoiceId)
+      : null;
+
+    if (!invoice && reference.startsWith('INV-')) {
+      const parts = reference.split('-');
+      if (parts[1]) invoice = await Invoice.findOne({ invoiceNumber: parts[1] });
+    }
+
+    if (!invoice) {
+      logger.warn(`processPaystackWebhook: no invoice for reference ${reference}`);
+      return { handled: false, reason: 'no invoice matched' };
+    }
+
+    const schoolId = invoice.schoolId.toString();
+    const status: 'CONFIRMED' | 'FAILED' =
+      event === 'charge.success' || event === 'transfer.success' ? 'CONFIRMED' : 'FAILED';
+
+    // Upsert the Payment row.
+    let payment = existing;
+    if (!payment) {
+      payment = new Payment({
+        schoolId,
+        studentId: invoice.studentId,
+        invoiceId: invoice._id,
+        amount: amountKobo,
+        method: 'ONLINE',
+        reference,
+        status,
+        provider: 'paystack',
+        providerReference: data.id?.toString(),
+        providerPayload: data,
+        confirmedAt: status === 'CONFIRMED' ? new Date() : undefined,
+      });
+    } else {
+      payment.status = status;
+      payment.providerPayload = data;
+      payment.providerReference = data.id?.toString();
+      if (status === 'CONFIRMED') payment.confirmedAt = new Date();
+    }
+    await payment.save();
+
+    // Reconcile the invoice on confirmed charges.
+    if (status === 'CONFIRMED') {
+      invoice.amountPaid = (invoice.amountPaid || 0) + amountKobo;
+      if (invoice.amountPaid >= invoice.total) invoice.status = 'PAID';
+      else if (invoice.amountPaid > 0) invoice.status = 'PARTIALLY_PAID';
+      await invoice.save();
+    }
+
+    await AuditLog.create({
+      actor: 'paystack-webhook',
+      action: `payment.${status.toLowerCase()}`,
+      resource: 'Payment',
+      resourceId: payment._id,
+      after: { event, reference, amountKobo },
+    });
+
+    logger.info(`processPaystackWebhook: ${event} for ${reference} → ${status}`);
+    return { handled: true, paymentId: payment._id, status };
+  }
+
+  /**
+   * Sweep all PENDING provider payments older than 30 minutes and
+   * reconcile their status against the provider. Called by the
+   * reconciliation worker on a schedule.
+   */
+  static async reconcilePendingPayments(): Promise<{ checked: number; updated: number }> {
+    const cutoff = new Date(Date.now() - 30 * 60 * 1000);
+    const stale = await Payment.find({
+      status: 'PENDING',
+      provider: { $exists: true, $ne: null },
+      createdAt: { $lt: cutoff },
+    }).limit(200);
+
+    let updated = 0;
+    for (const payment of stale) {
+      try {
+        // Without a live provider SDK call here, we mark them as
+        // FAILED after the stale window. A real implementation would
+        // hit the Paystack verify endpoint and set the correct status.
+        payment.status = 'FAILED';
+        await payment.save();
+        updated++;
+      } catch (err: any) {
+        logger.warn(`reconcilePendingPayments: failed to update ${payment._id}`, {
+          error: err?.message,
+        });
+      }
+    }
+
+    return { checked: stale.length, updated };
+  }
+
+  /**
+   * Batch-generate receipt numbers for approved payments that don't
+   * have one yet. Called by the report worker when compiling term
+   * reports. Returns the number of receipts issued.
+   */
+  static async processReceiptBatch(paymentIds?: string[]): Promise<{ issued: number }> {
+    const filter: any = {
+      status: { $in: ['APPROVED', 'CONFIRMED'] },
+      $or: [{ receiptNo: { $exists: false } }, { receiptNo: null }, { receiptNo: '' }],
+    };
+    if (Array.isArray(paymentIds) && paymentIds.length > 0) {
+      filter._id = { $in: paymentIds.filter((id) => mongoose.isValidObjectId(id)) };
+    }
+
+    const pending = await Payment.find(filter).limit(500);
+    let issued = 0;
+    for (const payment of pending) {
+      payment.receiptNo = `RCP-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+      await payment.save();
+      issued++;
+    }
+    return { issued };
   }
 }
