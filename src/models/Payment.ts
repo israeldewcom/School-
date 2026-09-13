@@ -1,17 +1,6 @@
 // src/models/Payment.ts
 import mongoose, { Schema, Document } from 'mongoose';
 
-// Payment lifecycle:
-//   PENDING    — submitted by staff, awaiting proprietor approval
-//   APPROVED   — approved by proprietor, invoice updated
-//   REJECTED   — rejected by proprietor with a reason
-//   CONFIRMED  — provider-confirmed (Paystack/Flutterwave webhook)
-//   FAILED     — provider reported failure
-//   REVERSED   — refunded or reversed by provider
-//   REFUNDED   — refunded to parent
-//
-// Both APPROVED/REJECTED (manual workflow) and CONFIRMED/FAILED
-// (provider workflow) exist because the two flows coexist.
 export type PaymentStatus =
   | 'PENDING'
   | 'APPROVED'
@@ -49,7 +38,10 @@ export interface IPayment extends Document {
   rejectedBy?: mongoose.Types.ObjectId | string;
   rejectionReason?: string;
 
+  // Receipt metadata — populated by the PDF worker after approval.
   receiptNo?: string;
+  receiptUrl?: string;      // ← new — was causing pdf.worker.ts TS2339
+  receiptGeneratedAt?: Date;
 
   // Provider fields (Paystack/Flutterwave integration).
   provider?: string;
@@ -86,6 +78,8 @@ const PaymentSchema = new Schema<IPayment>(
     rejectionReason: { type: String },
 
     receiptNo: { type: String, index: true },
+    receiptUrl: { type: String },
+    receiptGeneratedAt: { type: Date },
 
     provider: { type: String },
     providerReference: { type: String, index: true },
@@ -95,10 +89,7 @@ const PaymentSchema = new Schema<IPayment>(
   { timestamps: true }
 );
 
-// One payment per reference per school (idempotency guard).
 PaymentSchema.index({ schoolId: 1, reference: 1 }, { unique: true, sparse: true });
-
-// Fast lookup for the "Pending" tab.
 PaymentSchema.index({ schoolId: 1, status: 1, createdAt: -1 });
 
 export const Payment = mongoose.model<IPayment>('Payment', PaymentSchema);
