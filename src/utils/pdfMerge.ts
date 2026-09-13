@@ -17,8 +17,6 @@ export async function mergePdfs(urls: string[]): Promise<Buffer> {
       timeout: 30000,
     });
     const sourcePdf = await PDFDocument.load(resp.data);
-    // copyPages returns PDFPage[] — annotate explicitly so the
-    // callback parameter has a concrete type instead of `any`.
     const copiedPages: PDFPage[] = await merged.copyPages(
       sourcePdf,
       sourcePdf.getPageIndices()
@@ -33,8 +31,13 @@ export async function mergePdfs(urls: string[]): Promise<Buffer> {
 }
 
 /**
- * Same merge, but for a list of already-in-memory buffers. Useful
- * when report cards are generated in batches and then stitched.
+ * Alias used by reportCard.service.ts. Same implementation.
+ */
+export const mergePDFsFromUrls = mergePdfs;
+
+/**
+ * Merge a list of already-in-memory buffers. Useful when report cards
+ * are generated in batches and then stitched together.
  */
 export async function mergePdfBuffers(buffers: Buffer[]): Promise<Buffer> {
   const merged = await PDFDocument.create();
