@@ -1,18 +1,54 @@
-import { PDFDocument } from 'pdf-lib';
+// src/utils/pdfMerge.ts
+import { PDFDocument, PDFPage } from 'pdf-lib';
 import axios from 'axios';
 
-// Downloads each PDF by URL (they're stored on Cloudinary as raw files)
-// and merges them into a single PDF buffer for one-click printing.
-export const mergePDFsFromUrls = async (urls: string[]): Promise<Buffer> => {
+/**
+ * Fetch multiple PDF URLs and merge them into a single PDF buffer.
+ * The returned buffer can be uploaded to storage or streamed in a
+ * response with `Content-Type: application/pdf`.
+ */
+export async function mergePdfs(urls: string[]): Promise<Buffer> {
   const merged = await PDFDocument.create();
 
   for (const url of urls) {
-    const response = await axios.get(url, { responseType: 'arraybuffer' });
-    const sourceDoc = await PDFDocument.load(response.data);
-    const copiedPages = await merged.copyPages(sourceDoc, sourceDoc.getPageIndices());
-    copiedPages.forEach((page) => merged.addPage(page));
+    if (!url) continue;
+    const resp = await axios.get<ArrayBuffer>(url, {
+      responseType: 'arraybuffer',
+      timeout: 30000,
+    });
+    const sourcePdf = await PDFDocument.load(resp.data);
+    // copyPages returns PDFPage[] — annotate explicitly so the
+    // callback parameter has a concrete type instead of `any`.
+    const copiedPages: PDFPage[] = await merged.copyPages(
+      sourcePdf,
+      sourcePdf.getPageIndices()
+    );
+    for (const page of copiedPages) {
+      merged.addPage(page);
+    }
   }
 
   const bytes = await merged.save();
   return Buffer.from(bytes);
-};
+}
+
+/**
+ * Same merge, but for a list of already-in-memory buffers. Useful
+ * when report cards are generated in batches and then stitched.
+ */
+export async function mergePdfBuffers(buffers: Buffer[]): Promise<Buffer> {
+  const merged = await PDFDocument.create();
+  for (const buf of buffers) {
+    if (!buf || buf.length === 0) continue;
+    const sourcePdf = await PDFDocument.load(buf);
+    const copiedPages: PDFPage[] = await merged.copyPages(
+      sourcePdf,
+      sourcePdf.getPageIndices()
+    );
+    for (const page of copiedPages) {
+      merged.addPage(page);
+    }
+  }
+  const bytes = await merged.save();
+  return Buffer.from(bytes);
+}
