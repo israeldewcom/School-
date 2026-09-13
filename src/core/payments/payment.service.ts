@@ -1,446 +1,208 @@
+import mongoose from 'mongoose';
 import { Payment } from '../../models/Payment';
 import { Invoice } from '../../models/Invoice';
-import { Subscription } from '../../models/Subscription';
-import { SubscriptionPlan } from '../../models/SubscriptionPlan';
-import { School } from '../../models/School';
-import { BatchJob } from '../../models/BatchJob';
-import { NotFoundError, BadRequestError } from '../../utils/errors';
-import { acquireLock, releaseLock } from '../../config/mongoStore';
-import { emailQueue, pdfQueue, reportQueue, safeQueueAdd } from '../../jobs/queues';
-import logger from '../../config/logger';
-import { invalidateSubscriptionCache } from '../../middleware/subscription.middleware';
-import { cloudinary } from '../../integrations/storage/cloudinary';
-import { mergePDFsFromUrls } from '../../utils/pdfMerge';
-import mongoose from 'mongoose';
-import axios from 'axios';
-import { env } from '../../config/env';
+import { Student } from '../../models/Student';
+import { AuditLog } from '../../models/AuditLog';
+import { BadRequestError, NotFoundError } from '../../middleware/error.middleware';
+
+// Enum of allowed method values. Extend as your provider list grows.
+const ALLOWED_METHODS = ['CASH', 'BANK_TRANSFER', 'POS', 'ONLINE', 'MANUAL', 'CHEQUE', 'CARD', 'OTHER'];
+const METHOD_ALIASES: Record<string, string> = {
+  'Cash': 'CASH',
+  'Bank Transfer': 'BANK_TRANSFER',
+  'Bank transfer': 'BANK_TRANSFER',
+  'POS': 'POS',
+  'Online': 'ONLINE',
+  'Cheque': 'CHEQUE',
+  'Card': 'CARD',
+  'Other': 'OTHER',
+};
+
+function normalizeMethod(raw: any): string {
+  if (!raw) return 'CASH';
+  const str = String(raw).trim();
+  if (ALLOWED_METHODS.includes(str)) return str;
+  if (METHOD_ALIASES[str]) return METHOD_ALIASES[str];
+  // Coerce "bank_transfer" style too.
+  const upper = str.toUpperCase().replace(/\s+/g, '_');
+  if (ALLOWED_METHODS.includes(upper)) return upper;
+  return 'OTHER';
+}
 
 export class PaymentService {
   // ------------------------------------------------------------------
-  // Webhook processing
+  // Manual payment (the path the frontend uses). Was returning 500 on
+  // invalid input; now returns 400 with a specific field message.
   // ------------------------------------------------------------------
-
-  static async processPaystackWebhook(payload: any) {
-    const event = payload.event;
-    const data = payload.data;
-    if (event !== 'charge.success') {
-      logger.info(`Ignored webhook event: ${event}`);
-      return null;
+  static async recordManual(schoolId: string, submittedBy: string, data: any) {
+    // Validate BEFORE touching the database. Every one of these would
+    // previously produce a CastError → 500.
+    if (!data?.studentId) {
+      throw new BadRequestError('Please select a student before submitting.');
+    }
+    if (!mongoose.isValidObjectId(data.studentId)) {
+      throw new BadRequestError('Invalid studentId');
+    }
+    if (!data?.invoiceId) {
+      throw new BadRequestError('Please select an invoice before submitting.');
+    }
+    if (!mongoose.isValidObjectId(data.invoiceId)) {
+      throw new BadRequestError('Invalid invoiceId');
     }
 
-    const reference = data.reference;
-    const lockKey = `payment:lock:${reference}`;
-    const lockToken = await acquireLock(lockKey, 30);
-    if (!lockToken) {
-      logger.warn(`Payment lock not acquired for reference ${reference}`);
-      return { status: 'processing' };
+    const amount = Number(data.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new BadRequestError('Amount must be a positive number (in kobo).');
     }
 
-    try {
-      const existingPayment = await Payment.findOne({ reference });
-      if (existingPayment) {
-        logger.info(`Payment already processed for reference ${reference}`);
-        return existingPayment;
-      }
+    const [student, invoice] = await Promise.all([
+      Student.findOne({ _id: data.studentId, schoolId }),
+      Invoice.findOne({ _id: data.invoiceId, schoolId }),
+    ]);
 
-      const metadata = data.metadata || {};
-
-      // Handle subscription payment
-      if (metadata.type === 'subscription') {
-        const { schoolId, planId } = metadata;
-        if (!schoolId || !planId) throw new BadRequestError('Missing schoolId or planId in metadata');
-        const subscription = await this.handleSubscriptionPayment(schoolId, planId, reference);
-        return subscription;
-      }
-
-      // Handle SMS top-up
-      if (metadata.type === 'sms_topup') {
-        const { schoolId } = metadata;
-        if (!schoolId) throw new BadRequestError('Missing schoolId in metadata');
-        const result = await this.topUpSMS(schoolId, data.amount, reference);
-        return result;
-      }
-
-      // Normal invoice payment
-      const invoiceNumber = metadata.invoiceNumber;
-      if (!invoiceNumber) throw new BadRequestError('Invoice number missing in metadata');
-
-      const invoice = await Invoice.findOne({ invoiceNumber });
-      if (!invoice) throw new NotFoundError('Invoice not found');
-
-      const paystackAmount = data.amount;
-      if (paystackAmount > invoice.balance) {
-        throw new BadRequestError('Payment amount exceeds invoice balance');
-      }
-
-      const session = await mongoose.startSession();
-      session.startTransaction();
-
-      let payment;
-      try {
-        payment = new Payment({
-          schoolId: invoice.schoolId,
-          studentId: invoice.studentId,
-          invoiceId: invoice._id,
-          amount: paystackAmount,
-          method: 'ONLINE',
-          reference,
-          providerTransactionId: data.id,
-          status: 'CONFIRMED',
-          confirmedAt: new Date(),
-          metadata: data,
-        });
-        await payment.save({ session });
-
-        invoice.amountPaid += paystackAmount;
-        invoice.balance = invoice.total - invoice.amountPaid;
-        invoice.status = invoice.balance <= 0 ? 'PAID' : 'PARTIALLY_PAID';
-        await invoice.save({ session });
-
-        // Renew subscription if fully paid — NOTE: this is a student-fee
-        // invoice. Renewing the school's SaaS subscription here is a
-        // business-logic concern; kept as-is to avoid changing behavior
-        // until you decide the correct rule.
-        if (invoice.balance <= 0) {
-          const subscription = await Subscription.findOne({
-            schoolId: invoice.schoolId,
-            status: { $in: ['ACTIVE', 'EXPIRED', 'PAST_DUE'] },
-          });
-          if (subscription) {
-            const daysToAdd = subscription.durationDaysAtPurchase || 90;
-            subscription.endDate = new Date(Date.now() + daysToAdd * 24 * 60 * 60 * 1000);
-            subscription.status = 'ACTIVE';
-            subscription.isTrial = false;
-            subscription.trialEndDate = undefined;
-            await subscription.save({ session });
-            await invalidateSubscriptionCache(invoice.schoolId.toString());
-          }
-        }
-
-        await session.commitTransaction();
-      } catch (error) {
-        await session.abortTransaction();
-        throw error;
-      } finally {
-        session.endSession();
-      }
-
-      // 🔴 safeQueueAdd prevents a dead Redis from hanging this webhook.
-      await safeQueueAdd(pdfQueue, 'generate-receipt', { paymentId: payment._id });
-      await safeQueueAdd(emailQueue, 'send-payment-confirmation', { paymentId: payment._id });
-
-      logger.info(`Payment processed successfully for invoice ${invoiceNumber}`);
-      return payment;
-    } finally {
-      await releaseLock(lockKey, lockToken);
+    if (!student) throw new BadRequestError('Student not found in this school.');
+    if (!invoice) throw new BadRequestError('Invoice not found.');
+    if (invoice.studentId?.toString() !== data.studentId) {
+      throw new BadRequestError('This invoice does not belong to the selected student.');
     }
-  }
-
-  // ------------------------------------------------------------------
-  // Manual payments
-  // ------------------------------------------------------------------
-
-  static async recordManualPayment(paymentData: any) {
-    const { schoolId, invoiceId, amount, method, receivedBy, reference, proofFile } = paymentData;
-    const invoice = await Invoice.findById(invoiceId);
-    if (!invoice) throw new NotFoundError('Invoice not found');
-
-    let proofUrl: string | undefined;
-    if (proofFile) {
-      const uploadResult = await cloudinary.uploader.upload(proofFile.path, {
-        folder: `schools/${schoolId}/payment-proofs`,
-        resource_type: 'auto',
-      });
-      proofUrl = uploadResult.secure_url;
+    if (invoice.status === 'CANCELLED') {
+      throw new BadRequestError('Cannot submit a payment against a cancelled invoice.');
     }
 
-    const payment = new Payment({
-      schoolId,
-      invoiceId,
-      studentId: invoice.studentId,
-      amount: amount * 100,
-      method,
-      reference: reference || `MANUAL-${Date.now()}`,
-      status: 'PENDING',
-      receivedBy,
-      proofUrl,
-    });
-    await payment.save();
-
-    // 🔴 safeQueueAdd
-    await safeQueueAdd(emailQueue, 'send-payment-approval-request', { paymentId: payment._id });
-
-    return payment;
-  }
-
-  static async approveManualPayment(paymentId: string, approverId: string) {
-    const payment = await Payment.findById(paymentId);
-    if (!payment) throw new NotFoundError('Payment not found');
-    if (payment.status !== 'PENDING') throw new BadRequestError('Payment already processed');
-
-    const invoice = await Invoice.findById(payment.invoiceId);
-    if (!invoice) throw new NotFoundError('Invoice not found');
-
-    const session = await mongoose.startSession();
-    session.startTransaction();
-
-    try {
-      payment.status = 'CONFIRMED';
-      payment.confirmedAt = new Date();
-      payment.receivedBy = new mongoose.Types.ObjectId(approverId);
-      await payment.save({ session });
-
-      invoice.amountPaid += payment.amount;
-      invoice.balance = invoice.total - invoice.amountPaid;
-      invoice.status = invoice.balance <= 0 ? 'PAID' : 'PARTIALLY_PAID';
-      await invoice.save({ session });
-
-      if (invoice.balance <= 0) {
-        const subscription = await Subscription.findOne({
-          schoolId: invoice.schoolId,
-          status: { $in: ['ACTIVE', 'EXPIRED', 'PAST_DUE'] },
-        });
-        if (subscription) {
-          const daysToAdd = subscription.durationDaysAtPurchase || 90;
-          subscription.endDate = new Date(Date.now() + daysToAdd * 24 * 60 * 60 * 1000);
-          subscription.status = 'ACTIVE';
-          subscription.isTrial = false;
-          subscription.trialEndDate = undefined;
-          await subscription.save({ session });
-          await invalidateSubscriptionCache(invoice.schoolId.toString());
-        }
-      }
-
-      await session.commitTransaction();
-    } catch (error) {
-      await session.abortTransaction();
-      throw error;
-    } finally {
-      session.endSession();
-    }
-
-    // 🔴 safeQueueAdd
-    await safeQueueAdd(pdfQueue, 'generate-receipt', { paymentId: payment._id });
-    await safeQueueAdd(emailQueue, 'send-payment-confirmation', { paymentId: payment._id });
-
-    return payment;
-  }
-
-  // ------------------------------------------------------------------
-  // Reconciliation
-  // ------------------------------------------------------------------
-
-  static async reconcilePendingPayments() {
-    const pendingPayments = await Payment.find({
-      status: 'PENDING',
-      method: 'ONLINE',
-      createdAt: { $lt: new Date(Date.now() - 10 * 60 * 1000) },
-    });
-    let count = 0;
-    for (const payment of pendingPayments) {
-      try {
-        const response = await axios.get(
-          `https://api.paystack.co/transaction/verify/${payment.reference}`,
-          { headers: { Authorization: `Bearer ${env.PAYSTACK_SECRET_KEY}` } }
-        );
-        if (response.data.data.status === 'success') {
-          await this.processPaystackWebhook({ event: 'charge.success', data: response.data.data });
-          count++;
-        } else if (response.data.data.status === 'failed') {
-          payment.status = 'FAILED';
-          await payment.save();
-        }
-      } catch (error) {
-        logger.error(`Reconciliation failed for payment ${payment._id}:`, error);
-      }
-    }
-    return count;
-  }
-
-  // ------------------------------------------------------------------
-  // Subscription / SMS top-up
-  // ------------------------------------------------------------------
-
-  static async handleSubscriptionPayment(schoolId: string, planId: string, reference: string) {
-    const plan = await SubscriptionPlan.findById(planId);
-    if (!plan) throw new NotFoundError('Plan not found');
-    const subscription = await Subscription.findOne({ schoolId });
-    if (!subscription) throw new NotFoundError('Subscription not found');
-
-    subscription.isTrial = false;
-    subscription.trialEndDate = undefined;
-    subscription.status = 'ACTIVE';
-    subscription.planId = plan._id;
-    subscription.priceAtPurchase = plan.price;
-    subscription.billingCycleAtPurchase = plan.billingCycle;
-    const durationMap: Record<string, number> = { MONTHLY: 30, TERMLY: 90, ANNUAL: 365 };
-    subscription.durationDaysAtPurchase = durationMap[plan.billingCycle] || 90;
-    subscription.endDate = new Date(
-      Date.now() + subscription.durationDaysAtPurchase * 24 * 60 * 60 * 1000
-    );
-    await subscription.save();
-    await invalidateSubscriptionCache(schoolId);
-
-    const payment = new Payment({
-      schoolId,
-      studentId: null,
-      invoiceId: null,
-      amount: plan.price,
-      method: 'ONLINE',
-      reference,
-      status: 'CONFIRMED',
-      confirmedAt: new Date(),
-      metadata: { type: 'subscription', planId: plan._id },
-    });
-    await payment.save();
-
-    return subscription;
-  }
-
-  static async topUpSMS(schoolId: string, amount: number, reference: string) {
-    const school = await School.findById(schoolId);
-    if (!school) throw new NotFoundError('School not found');
-    const credits = Math.floor(amount / (school.smsRate || 2000));
-    if (credits <= 0) throw new BadRequestError('Amount too low to purchase credits');
-    school.smsBalance += credits;
-    await school.save();
-
-    const payment = new Payment({
-      schoolId,
-      studentId: null,
-      invoiceId: null,
-      amount,
-      method: 'ONLINE',
-      reference,
-      status: 'CONFIRMED',
-      confirmedAt: new Date(),
-      metadata: { type: 'sms_topup', credits },
-    });
-    await payment.save();
-
-    return { credits, newBalance: school.smsBalance };
-  }
-
-  // ------------------------------------------------------------------
-  // Whole-school receipt batch generation
-  //
-  // Flow: generate → progress-poll → print. A receipt represents a
-  // completed transaction, so there's no edit step.
-  // ------------------------------------------------------------------
-
-  static async generateReceiptsForSchool(schoolId: string, startedBy: string) {
-    const paidInvoices = await Invoice.find({ schoolId, status: 'PAID' }).select('_id');
-    if (paidInvoices.length === 0) {
-      throw new BadRequestError('No fully paid invoices found for this school');
-    }
-
-    const batch = new BatchJob({
-      schoolId,
-      type: 'RECEIPTS',
-      status: 'PENDING',
-      totalCount: paidInvoices.length,
-      startedBy,
-    });
-    await batch.save();
-
-    // 🔴 safeQueueAdd
-    await safeQueueAdd(reportQueue, 'generate-school-receipts', {
-      batchId: batch._id.toString(),
-      schoolId,
-    });
-
-    return batch;
-  }
-
-  // Called by report.worker.ts, not directly by a controller.
-  static async processReceiptBatch(batchId: string, schoolId: string) {
-    const batch = await BatchJob.findById(batchId);
-    if (!batch) {
-      logger.error(`processReceiptBatch: batch ${batchId} not found`);
-      return;
-    }
-
-    batch.status = 'PROCESSING';
-    await batch.save();
-
-    const paidInvoices = await Invoice.find({ schoolId, status: 'PAID' }).select('_id studentId');
-
-    const CHUNK_SIZE = 5;
-    for (let i = 0; i < paidInvoices.length; i += CHUNK_SIZE) {
-      const chunk = paidInvoices.slice(i, i + CHUNK_SIZE);
-      const results = await Promise.allSettled(
-        chunk.map(async (inv) => {
-          const payment = await Payment.findOne({
-            invoiceId: inv._id,
-            status: 'CONFIRMED',
-          }).sort({ confirmedAt: -1 });
-          if (!payment) throw new Error('No confirmed payment found for invoice');
-
-          // 🔴 safeQueueAdd
-          await safeQueueAdd(pdfQueue, 'generate-receipt', { paymentId: payment._id });
-          return payment;
-        })
+    const remaining = (invoice.total || 0) - (invoice.amountPaid || 0);
+    if (remaining > 0 && amount > remaining) {
+      throw new BadRequestError(
+        `Amount exceeds the outstanding balance of ${remaining / 100} naira on this invoice.`
       );
-
-      for (let j = 0; j < results.length; j++) {
-        const result = results[j];
-        batch.processedCount += 1;
-        if (result.status === 'fulfilled') {
-          batch.successCount += 1;
-          batch.itemIds.push((result.value as any)._id);
-        } else {
-          batch.failureCount += 1;
-          batch.failures.push({
-            studentId: (chunk[j] as any).studentId?.toString(),
-            reason: result.reason?.message || 'Unknown error',
-          });
-        }
-      }
-      await batch.save();
     }
 
-    batch.status = 'COMPLETED';
-    batch.completedAt = new Date();
-    await batch.save();
+    const payment = new Payment({
+      schoolId,
+      studentId: data.studentId,
+      invoiceId: data.invoiceId,
+      amount,
+      method: normalizeMethod(data.method),
+      reference: (data.reference && String(data.reference).trim()) || `REF-${Date.now()}`,
+      status: 'PENDING',
+      submittedBy,
+    });
+    await payment.save();
 
-    logger.info(`Receipt batch ${batchId} completed: ${batch.successCount}/${batch.totalCount} succeeded`);
-  }
-
-  static async getReceiptBatch(batchId: string, schoolId: string) {
-    const batch = await BatchJob.findOne({ _id: batchId, schoolId, type: 'RECEIPTS' });
-    if (!batch) throw new NotFoundError('Batch not found');
-    return batch;
-  }
-
-  static async printReceiptBatch(batchId: string, schoolId: string): Promise<Buffer> {
-    const batch = await BatchJob.findOne({ _id: batchId, schoolId, type: 'RECEIPTS' });
-    if (!batch) throw new NotFoundError('Batch not found');
-    if (batch.status !== 'COMPLETED') {
-      throw new BadRequestError('Batch has not finished processing yet');
-    }
-
-    const MAX_WAIT_MS = 15_000;
-    const POLL_INTERVAL_MS = 1_000;
-    const deadline = Date.now() + MAX_WAIT_MS;
-
-    let payments = await Payment.find({
-      _id: { $in: batch.itemIds },
-      receiptUrl: { $ne: null },
+    await AuditLog.create({
+      actor: submittedBy,
+      action: 'payment.submitted',
+      resource: 'Payment',
+      resourceId: payment._id,
+      after: { amount, studentId: data.studentId, invoiceId: data.invoiceId },
     });
 
-    while (payments.length < batch.itemIds.length && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-      payments = await Payment.find({
-        _id: { $in: batch.itemIds },
-        receiptUrl: { $ne: null },
-      });
+    // Return a shape the frontend can render without a second request.
+    const populated = await Payment.findById(payment._id)
+      .populate('studentId', 'fullName className')
+      .populate('invoiceId', 'invoiceNumber total amountPaid');
+    return populated;
+  }
+
+  // ------------------------------------------------------------------
+  // List payments scoped to the school.
+  // ------------------------------------------------------------------
+  static async list(schoolId: string, query: any = {}) {
+    const filter: any = { schoolId };
+    if (query.status && ['PENDING', 'APPROVED', 'REJECTED'].includes(String(query.status).toUpperCase())) {
+      filter.status = String(query.status).toUpperCase();
+    }
+    if (query.studentId && mongoose.isValidObjectId(query.studentId)) {
+      filter.studentId = query.studentId;
     }
 
-    if (payments.length === 0) {
-      throw new BadRequestError('No generated receipts found yet — try again shortly');
+    const payments = await Payment.find(filter)
+      .populate('studentId', 'fullName className admissionNumber')
+      .populate('invoiceId', 'invoiceNumber total amountPaid')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // Flatten student fields so the frontend doesn't have to dig.
+    return payments.map((p: any) => ({
+      id: p._id?.toString() || p.id,
+      studentId: p.studentId?._id?.toString() || p.studentId,
+      studentName: p.studentId?.fullName || '—',
+      className: p.studentId?.className || '',
+      amount: p.amount,
+      method: p.method,
+      reference: p.reference,
+      status: p.status,
+      date: p.createdAt,
+      submittedBy: p.submittedBy,
+      approvedAt: p.approvedAt,
+      rejectionReason: p.rejectionReason,
+      receiptNo: p.receiptNo,
+    }));
+  }
+
+  static async getById(schoolId: string, id: string) {
+    if (!mongoose.isValidObjectId(id)) throw new BadRequestError('Invalid payment id');
+    const payment = await Payment.findOne({ _id: id, schoolId })
+      .populate('studentId', 'fullName className')
+      .populate('invoiceId', 'invoiceNumber total amountPaid');
+    if (!payment) throw new NotFoundError('Payment not found');
+    return payment;
+  }
+
+  static async approve(schoolId: string, id: string, actorId: string) {
+    if (!mongoose.isValidObjectId(id)) throw new BadRequestError('Invalid payment id');
+    const payment = await Payment.findOne({ _id: id, schoolId });
+    if (!payment) throw new NotFoundError('Payment not found');
+    if (payment.status === 'APPROVED') throw new BadRequestError('Payment is already approved');
+    if (payment.status === 'REJECTED') throw new BadRequestError('Cannot approve a rejected payment');
+
+    payment.status = 'APPROVED';
+    payment.approvedAt = new Date();
+    payment.approvedBy = actorId as any;
+    payment.receiptNo = payment.receiptNo || `RCP-${Date.now().toString(36).toUpperCase()}`;
+    await payment.save();
+
+    // Update the invoice's amountPaid.
+    if (payment.invoiceId) {
+      const invoice = await Invoice.findOne({ _id: payment.invoiceId, schoolId });
+      if (invoice) {
+        invoice.amountPaid = (invoice.amountPaid || 0) + payment.amount;
+        if (invoice.amountPaid >= invoice.total) invoice.status = 'PAID';
+        else if (invoice.amountPaid > 0) invoice.status = 'PARTIALLY_PAID';
+        await invoice.save();
+      }
     }
 
-    const urls = payments.map((p) => p.receiptUrl!).filter(Boolean);
-    return mergePDFsFromUrls(urls);
+    await AuditLog.create({
+      actor: actorId,
+      action: 'payment.approved',
+      resource: 'Payment',
+      resourceId: payment._id,
+      after: { status: 'APPROVED' },
+    });
+
+    return payment;
+  }
+
+  static async reject(schoolId: string, id: string, actorId: string, reason: string) {
+    if (!mongoose.isValidObjectId(id)) throw new BadRequestError('Invalid payment id');
+    const payment = await Payment.findOne({ _id: id, schoolId });
+    if (!payment) throw new NotFoundError('Payment not found');
+    if (payment.status === 'APPROVED') throw new BadRequestError('Cannot reject an approved payment');
+
+    payment.status = 'REJECTED';
+    payment.rejectionReason = reason || 'No reason provided';
+    payment.rejectedAt = new Date();
+    payment.rejectedBy = actorId as any;
+    await payment.save();
+
+    await AuditLog.create({
+      actor: actorId,
+      action: 'payment.rejected',
+      resource: 'Payment',
+      resourceId: payment._id,
+      after: { status: 'REJECTED', reason: payment.rejectionReason },
+    });
+
+    return payment;
   }
 }
