@@ -1,12 +1,20 @@
+// src/core/attendance/attendance.service.ts
 import mongoose from 'mongoose';
 import { Attendance } from '../../models/Attendance';
 import { Student } from '../../models/Student';
 import { Class } from '../../models/Class';
 import { BadRequestError, NotFoundError } from '../../middleware/error.middleware';
 
+// Narrow union so we can assign typed statuses without fighting the
+// schema's enum. Kept in sync with AttendanceSchema.status.
+type AttendanceStatus = 'PRESENT' | 'ABSENT' | 'LATE' | 'EXCUSED';
+const VALID_STATUSES: readonly AttendanceStatus[] = ['PRESENT', 'ABSENT', 'LATE', 'EXCUSED'];
+
 export class AttendanceService {
   // ------------------------------------------------------------------
-  // Mark / update single record.
+  // Mark or update a single student's attendance for a given day.
+  // Idempotent: calling twice updates the existing record instead of
+  // creating a duplicate.
   // ------------------------------------------------------------------
   static async mark(schoolId: string, data: any) {
     if (!data?.studentId || !mongoose.isValidObjectId(data.studentId)) {
@@ -23,11 +31,12 @@ export class AttendanceService {
     if (!data?.termId || !mongoose.isValidObjectId(data.termId)) {
       throw new BadRequestError('Academic term is required.');
     }
-    const validStatuses = ['PRESENT', 'ABSENT', 'LATE', 'EXCUSED'];
-    const status = String(data.status || 'PRESENT').toUpperCase();
-    if (!validStatuses.includes(status)) {
-      throw new BadRequestError(`Status must be one of: ${validStatuses.join(', ')}`);
+
+    const rawStatus = String(data.status || 'PRESENT').toUpperCase();
+    if (!(VALID_STATUSES as readonly string[]).includes(rawStatus)) {
+      throw new BadRequestError(`Status must be one of: ${VALID_STATUSES.join(', ')}`);
     }
+    const status = rawStatus as AttendanceStatus;
 
     const [student, cls] = await Promise.all([
       Student.findOne({ _id: data.studentId, schoolId }),
@@ -39,7 +48,7 @@ export class AttendanceService {
     const date = data.date ? new Date(data.date) : new Date();
     date.setHours(0, 0, 0, 0);
 
-    // One record per student per day per subject-less attendance model.
+    // One record per student per day — update if present.
     const existing = await Attendance.findOne({
       schoolId,
       studentId: data.studentId,
@@ -70,17 +79,30 @@ export class AttendanceService {
   }
 
   // ------------------------------------------------------------------
-  // Single student history / summary.
+  // Per-student history with optional date range.
   // ------------------------------------------------------------------
-  static async getStudentAttendance(studentId: string, schoolId: string, from?: Date, to?: Date) {
-    if (!mongoose.isValidObjectId(studentId)) throw new BadRequestError('Invalid student id');
+  static async getStudentAttendance(
+    studentId: string,
+    schoolId: string,
+    from?: Date,
+    to?: Date
+  ) {
+    if (!mongoose.isValidObjectId(studentId)) {
+      throw new BadRequestError('Invalid student id');
+    }
     const query: any = { studentId, schoolId };
     if (from && to) query.date = { $gte: from, $lte: to };
     return Attendance.find(query).sort({ date: -1 });
   }
 
+  // ------------------------------------------------------------------
+  // Aggregate stats for one student — used by the parent portal and
+  // the student detail modal.
+  // ------------------------------------------------------------------
   static async getAttendanceSummary(studentId: string, schoolId: string) {
-    if (!mongoose.isValidObjectId(studentId)) throw new BadRequestError('Invalid student id');
+    if (!mongoose.isValidObjectId(studentId)) {
+      throw new BadRequestError('Invalid student id');
+    }
     const records = await Attendance.find({ studentId, schoolId }).lean();
     const total = records.length;
     const present = records.filter((r) => r.status === 'PRESENT').length;
@@ -97,30 +119,59 @@ export class AttendanceService {
     };
   }
 
+  // ------------------------------------------------------------------
+  // Roster for a class on a specific day. Populates student name so
+  // the mobile attendance view can render without a second request.
+  // ------------------------------------------------------------------
   static async getByClass(classId: string, schoolId: string, date: Date) {
-    if (!mongoose.isValidObjectId(classId)) throw new BadRequestError('Invalid class id');
-    return Attendance.find({ classId, schoolId, date }).populate('studentId', 'fullName');
+    if (!mongoose.isValidObjectId(classId)) {
+      throw new BadRequestError('Invalid class id');
+    }
+    const startOfDay = new Date(date);
+    startOfDay.setHours(0, 0, 0, 0);
+    return Attendance.find({ classId, schoolId, date: startOfDay })
+      .populate('studentId', 'fullName admissionNumber');
   }
 
+  // ------------------------------------------------------------------
+  // Record-level update — used when a teacher edits a single row
+  // after saving the full register.
+  // ------------------------------------------------------------------
   static async update(id: string, schoolId: string, data: any) {
-    if (!mongoose.isValidObjectId(id)) throw new BadRequestError('Invalid attendance id');
-    const att = await Attendance.findOneAndUpdate({ _id: id, schoolId }, data, { new: true });
+    if (!mongoose.isValidObjectId(id)) {
+      throw new BadRequestError('Invalid attendance id');
+    }
+    // Normalize status if it's being changed.
+    if (data?.status !== undefined) {
+      const rawStatus = String(data.status).toUpperCase();
+      if (!(VALID_STATUSES as readonly string[]).includes(rawStatus)) {
+        throw new BadRequestError(`Status must be one of: ${VALID_STATUSES.join(', ')}`);
+      }
+      data.status = rawStatus as AttendanceStatus;
+    }
+    const att = await Attendance.findOneAndUpdate({ _id: id, schoolId }, data, {
+      new: true,
+      runValidators: true,
+    });
     if (!att) throw new NotFoundError('Attendance record not found');
     return att;
   }
 
   static async delete(id: string, schoolId: string) {
-    if (!mongoose.isValidObjectId(id)) throw new BadRequestError('Invalid attendance id');
+    if (!mongoose.isValidObjectId(id)) {
+      throw new BadRequestError('Invalid attendance id');
+    }
     const att = await Attendance.findOneAndDelete({ _id: id, schoolId });
     if (!att) throw new NotFoundError('Attendance record not found');
     return att;
   }
 
   // ------------------------------------------------------------------
-  // Today's whole-school summary. This is the endpoint the attendance
-  // page hits first — it was previously hanging because a single slow
-  // query blocked the whole request. Every step is now capped and the
-  // return shape is guaranteed, even on empty data.
+  // Whole-school attendance for today.
+  //
+  // Every query is bounded with maxTimeMS so a slow or sparse dataset
+  // can never hang the request. The response shape is guaranteed even
+  // when no attendance has been marked yet.
   // ------------------------------------------------------------------
   static async getTodaySummary(schoolId: string) {
     const startOfDay = new Date();
@@ -154,16 +205,19 @@ export class AttendanceService {
       absent,
       late,
       excused,
-      rate: totalActiveStudents > 0
-        ? Math.round((present / totalActiveStudents) * 100)
-        : 0,
+      rate:
+        totalActiveStudents > 0
+          ? Math.round((present / totalActiveStudents) * 100)
+          : 0,
     };
   }
 
   // ------------------------------------------------------------------
-  // Seven-day attendance rate trend. Previous implementation used an
-  // aggregation that could hang on sparse data — this version uses a
-  // bounded date range with maxTimeMS and always returns 7 entries.
+  // Seven-day present-rate trend.
+  //
+  // Returns exactly seven entries — weekends and unmarked days show
+  // as 0 rather than being omitted, which keeps the chart's X-axis
+  // stable across refreshes.
   // ------------------------------------------------------------------
   static async getWeeklySummary(schoolId: string) {
     const start = new Date();
