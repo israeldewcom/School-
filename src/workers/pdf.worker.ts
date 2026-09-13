@@ -4,22 +4,18 @@ import mongoose from 'mongoose';
 import { Payment } from '../models/Payment';
 import { Student } from '../models/Student';
 import { School } from '../models/School';
-import { mergePdfBuffers } from '../utils/pdfMerge';
-import redis from '../config/redis';
+import { redis } from '../config/redis';
 import logger from '../config/logger';
 
-// Minimal shape for the job payload. Adjust if your queue uses a
-// different structure — the only hard requirements are `paymentId`
-// and `schoolId`.
 interface PdfJobData {
   paymentId: string;
   schoolId: string;
 }
 
 /**
- * Generate a receipt PDF for an approved payment, upload it to storage
- * (or write it to disk), and attach the resulting URL to the Payment
- * document under `receiptUrl`.
+ * Generate a receipt PDF for an approved payment and attach the URL
+ * to the Payment document under `receiptUrl`. Idempotent — re-running
+ * for an already-processed payment short-circuits.
  */
 export async function generateReceipt(
   job: Job<PdfJobData>
@@ -33,8 +29,6 @@ export async function generateReceipt(
   const payment = await Payment.findOne({ _id: paymentId, schoolId });
   if (!payment) throw new Error(`Payment not found: ${paymentId}`);
 
-  // If the receipt was already generated, short-circuit. This makes
-  // the worker safely re-runnable.
   if (payment.receiptUrl) {
     logger.info(`Receipt already exists for ${paymentId}`);
     return { url: payment.receiptUrl };
@@ -45,20 +39,21 @@ export async function generateReceipt(
     School.findById(schoolId).lean(),
   ]);
 
-  // In a real implementation this is where you'd build the PDF — the
-  // shape of the generated file depends on your receipt template.
-  // The point of this file is that it compiles and the types line up.
+  // IStudent doesn't expose a `fullName` field — it's a virtual on the
+  // schema. Build the name from the raw fields with a safe fallback.
+  const studentName = student
+    ? `${(student as any).firstName || ''} ${(student as any).lastName || ''}`.trim() || '—'
+    : '—';
+
   const pdfBuffer: Buffer = await renderReceiptPdf({
-    schoolName: school?.name || 'School',
-    studentName: student?.fullName || '—',
+    schoolName: (school as any)?.name || 'School',
+    studentName,
     amount: payment.amount,
     reference: payment.reference,
     receiptNo: payment.receiptNo || payment.reference,
     date: payment.approvedAt || payment.createdAt,
   });
 
-  // Upload destination is abstracted — swap for your S3/Cloudinary
-  // helper. For now we write the URL that the file-upload returns.
   const url = await uploadReceiptBuffer(paymentId, pdfBuffer);
 
   payment.receiptUrl = url;
@@ -70,7 +65,8 @@ export async function generateReceipt(
 }
 
 // ------------------------------------------------------------------
-// Stubs — replace with your actual template + upload implementation.
+// PDF rendering — replace with your actual receipt template. This
+// version produces a valid PDF so the pipeline runs end-to-end.
 // ------------------------------------------------------------------
 async function renderReceiptPdf(data: {
   schoolName: string;
@@ -80,11 +76,10 @@ async function renderReceiptPdf(data: {
   receiptNo: string;
   date: Date;
 }): Promise<Buffer> {
-  // A real version would use pdfkit or pdf-lib to draw text on a page.
-  // For build purposes we return an empty-but-valid PDF buffer.
   const { PDFDocument } = await import('pdf-lib');
   const doc = await PDFDocument.create();
   const page = doc.addPage([595, 842]); // A4 portrait
+
   page.drawText(`${data.schoolName} — Receipt ${data.receiptNo}`, {
     x: 50,
     y: 780,
@@ -97,24 +92,31 @@ async function renderReceiptPdf(data: {
     size: 11,
   });
   page.drawText(`Reference: ${data.reference}`, { x: 50, y: 710, size: 11 });
+  page.drawText(`Date: ${data.date.toLocaleDateString('en-NG')}`, {
+    x: 50,
+    y: 690,
+    size: 11,
+  });
+
   const bytes = await doc.save();
   return Buffer.from(bytes);
 }
 
+// ------------------------------------------------------------------
+// Upload — swap for S3/Cloudinary when ready. Stub returns a stable
+// path so the worker pipeline runs without external credentials.
+// ------------------------------------------------------------------
 async function uploadReceiptBuffer(
   paymentId: string,
   buffer: Buffer
 ): Promise<string> {
-  // Replace this with a call to your storage layer. Returning a
-  // deterministic placeholder URL keeps the workflow functional
-  // without a real bucket wired up.
   const filename = `receipts/${paymentId}.pdf`;
   logger.debug(`(stub) uploadReceiptBuffer → ${filename} (${buffer.length} bytes)`);
   return `/uploads/${filename}`;
 }
 
 // ------------------------------------------------------------------
-// Worker registration — this is what the process starts at boot.
+// Worker registration
 // ------------------------------------------------------------------
 export function startPdfWorker(): Worker {
   const worker = new Worker<PdfJobData>(
@@ -132,17 +134,17 @@ export function startPdfWorker(): Worker {
     }
   );
 
-  // The two callbacks that were failing with "implicitly any" — the
-  // error and result params now carry concrete types.
   worker.on('failed', (job: Job<PdfJobData> | undefined, error: Error) => {
-    logger.error(`pdf.worker job failed: ${job?.id ?? 'unknown'}`, {
-      message: error.message,
-      stack: error.stack,
-    });
+    // Object first, message second — both the wrapper and native pino
+    // accept this shape, so it's the safest call pattern.
+    logger.error(
+      { jobId: job?.id, message: error.message, stack: error.stack },
+      'pdf.worker job failed'
+    );
   });
 
   worker.on('completed', (job: Job<PdfJobData>, result: any) => {
-    logger.info(`pdf.worker job completed: ${job.id}`, { result });
+    logger.info({ jobId: job.id, result }, 'pdf.worker job completed');
   });
 
   logger.info('PDF worker started');
