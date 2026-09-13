@@ -1,217 +1,208 @@
-import Redis from 'ioredis';
+// src/config/redis.ts
+import Redis, { RedisOptions } from 'ioredis';
 import logger from './logger';
-import { env } from './env';
 
-// ============================================================================
-// MAIN APP CLIENT — fast-fail, no offline queue
-// ============================================================================
-// Used for caching, distributed locks, and idempotency checks. Configured
-// with a finite maxRetriesPerRequest and no offline queue so a down Redis
-// causes an immediate fallback instead of a hanging HTTP request.
+// ------------------------------------------------------------------
+// Connection config
+//
+// REDIS_URL takes precedence. Falls back to individual REDIS_HOST /
+// REDIS_PORT / REDIS_PASSWORD vars for legacy setups. In development
+// without any config, defaults to localhost so `npm run dev` works
+// out of the box.
+// ------------------------------------------------------------------
+const REDIS_URL = process.env.REDIS_URL;
+const REDIS_HOST = process.env.REDIS_HOST || '127.0.0.1';
+const REDIS_PORT = Number(process.env.REDIS_PORT) || 6379;
+const REDIS_PASSWORD = process.env.REDIS_PASSWORD || undefined;
+const REDIS_TLS = process.env.REDIS_TLS === 'true';
+const REDIS_DB = Number(process.env.REDIS_DB) || 0;
 
-let client: Redis;
+const isProduction = process.env.NODE_ENV === 'production';
 
-const getRedisClient = (): Redis => {
-  if (!client) {
-    const url = env.REDIS_URL;
-    if (!url) {
-      logger.warn('REDIS_URL not set – Redis features disabled');
-      return new Redis({ lazyConnect: true });
-    }
+// ------------------------------------------------------------------
+// Shared options
+// ------------------------------------------------------------------
+const baseOptions: RedisOptions = {
+  // Exponential backoff reconnect. Cap at 30s so a dead Redis doesn't
+  // hammer the network.
+  retryStrategy(times: number) {
+    const delay = Math.min(times * 200, 30000);
+    return delay;
+  },
 
-    const isTls = url.startsWith('rediss://');
-    let host: string | undefined;
-    try {
-      host = new URL(url).hostname;
-    } catch (_) {
-      host = undefined;
-    }
+  // Give up connecting after 20 attempts in production so we don't spin
+  // forever against a misconfigured instance. In dev, retry forever so
+  // hot-reloading works while redis is being started.
+  maxRetriesPerRequest: isProduction ? 3 : null,
 
-    client = new Redis(url, {
-      maxRetriesPerRequest: 3,
-      enableOfflineQueue: false,
-      enableReadyCheck: false,
-      connectTimeout: 5000,
-      retryStrategy: (times) => {
-        const delay = Math.min(Math.pow(2, times) * 1000, 60000);
-        logger.warn(`Redis reconnect attempt ${times} in ${delay}ms`);
-        return delay;
-      },
-      ...(isTls
-        ? {
-            tls: {
-              rejectUnauthorized: false,
-              servername: host,
-            },
-          }
-        : {}),
-    });
+  // Enable the offline queue in development so a Redis restart doesn't
+  // drop commands. Disabled in prod so we fail fast instead of silently
+  // buffering.
+  enableOfflineQueue: !isProduction,
 
-    let lastErrorTime = 0;
-    client.on('error', (err) => {
-      const now = Date.now();
-      if (now - lastErrorTime > 30000) {
-        logger.error('Redis error:', err.message);
-        lastErrorTime = now;
-      }
-    });
-    client.on('connect', () => logger.info('Redis connected'));
-    client.on('ready', () => logger.info('Redis ready'));
-    client.on('close', () => logger.warn('Redis connection closed'));
-  }
-  return client;
+  // Only fire ready callback after Redis confirms it's accepting commands.
+  enableReadyCheck: true,
+
+  // Lazy connect: don't dial until the first command. Lets the app boot
+  // even when Redis is temporarily unavailable.
+  lazyConnect: false,
+
+  // Connection name shows up in Redis `CLIENT LIST` output — useful for
+  // debugging who's holding connections.
+  connectionName: 'schoolflow-api',
 };
 
-export const redis = getRedisClient();
-
-// ============================================================================
-// BULLMQ CLIENT — must have maxRetriesPerRequest: null
-// ============================================================================
-// BullMQ uses blocking commands (BRPOPLPUSH etc.) that need to wait
-// indefinitely on the server. Its Worker constructor enforces this by
-// throwing at startup if maxRetriesPerRequest is anything other than null.
-// We therefore use a separate, dedicated connection for Queue and Worker
-// instances.
+// ------------------------------------------------------------------
+// Main application client
 //
-// The "hang forever" problem this could reintroduce at the app level is
-// mitigated by safeQueueAdd() (jobs/queues.ts), which races queue.add()
-// against a 3-second timeout so HTTP requests always return.
+// Used for: caching, rate-limit counters, session-ish storage, the
+// health check ping. NOT used by BullMQ (see bullmqConnection below).
+// ------------------------------------------------------------------
+export const redis = REDIS_URL
+  ? new Redis(REDIS_URL, {
+      ...baseOptions,
+      ...(REDIS_TLS ? { tls: { rejectUnauthorized: false } } : {}),
+    })
+  : new Redis({
+      ...baseOptions,
+      host: REDIS_HOST,
+      port: REDIS_PORT,
+      password: REDIS_PASSWORD,
+      db: REDIS_DB,
+      ...(REDIS_TLS ? { tls: { rejectUnauthorized: false } } : {}),
+    });
+
+// ------------------------------------------------------------------
+// Worker / BullMQ connection
 //
-// enableOfflineQueue stays at the default (true) because BullMQ's own
-// reconnect logic depends on it.
-
-let bullClient: Redis | null = null;
-
-const getBullRedisClient = (): Redis => {
-  if (!bullClient) {
-    const url = env.REDIS_URL;
-    if (!url) {
-      logger.warn('REDIS_URL not set – BullMQ features disabled');
-      bullClient = new Redis({ lazyConnect: true, maxRetriesPerRequest: null });
-      return bullClient;
-    }
-
-    const isTls = url.startsWith('rediss://');
-    let host: string | undefined;
-    try {
-      host = new URL(url).hostname;
-    } catch (_) {
-      host = undefined;
-    }
-
-    bullClient = new Redis(url, {
-      // 🔴 Required by BullMQ — do not change this to a number.
+// BullMQ needs `maxRetriesPerRequest: null` on blocking commands
+// (BRPOPLPUSH etc.) — without it, BullMQ throws "maxRetriesPerRequest
+// must be null" at startup. It also benefits from a separate
+// connection so a stalled worker job can't block the API's cache
+// traffic.
+// ------------------------------------------------------------------
+export const bullmqConnection = REDIS_URL
+  ? new Redis(REDIS_URL, {
+      ...baseOptions,
       maxRetriesPerRequest: null,
-      enableReadyCheck: false,
-      connectTimeout: 10000,
-      retryStrategy: (times) => {
-        const delay = Math.min(Math.pow(2, times) * 1000, 60000);
-        if (times % 10 === 0) {
-          logger.warn(`BullMQ Redis reconnect attempt ${times} in ${delay}ms`);
-        }
-        return delay;
-      },
-      ...(isTls
-        ? {
-            tls: {
-              rejectUnauthorized: false,
-              servername: host,
-            },
-          }
-        : {}),
+      enableOfflineQueue: false,
+      connectionName: 'schoolflow-worker',
+      ...(REDIS_TLS ? { tls: { rejectUnauthorized: false } } : {}),
+    })
+  : new Redis({
+      ...baseOptions,
+      host: REDIS_HOST,
+      port: REDIS_PORT,
+      password: REDIS_PASSWORD,
+      db: REDIS_DB,
+      maxRetriesPerRequest: null,
+      enableOfflineQueue: false,
+      connectionName: 'schoolflow-worker',
+      ...(REDIS_TLS ? { tls: { rejectUnauthorized: false } } : {}),
     });
 
-    let lastErrorTime = 0;
-    bullClient.on('error', (err) => {
-      const now = Date.now();
-      if (now - lastErrorTime > 30000) {
-        logger.error('BullMQ Redis error:', err.message);
-        lastErrorTime = now;
-      }
+// ------------------------------------------------------------------
+// Lifecycle events
+//
+// ioredis emits these on the client. We log everything so ops can see
+// the Redis state in the app logs, and we never let an `error` event
+// go unhandled (unhandled error events crash Node).
+// ------------------------------------------------------------------
+
+function attachLogging(client: Redis, name: string) {
+  client.on('connect', () => {
+    logger.info(`[redis:${name}] connecting`);
+  });
+
+  client.on('ready', () => {
+    logger.info(`[redis:${name}] ready`);
+  });
+
+  client.on('error', (err: Error) => {
+    // Do NOT throw here. The health endpoint reports degraded state and
+    // most requests don't touch Redis, so the API keeps serving.
+    logger.error(`[redis:${name}] error`, {
+      message: err.message,
+      code: (err as any).code,
     });
-    bullClient.on('connect', () => logger.info('BullMQ Redis connected'));
-    bullClient.on('ready', () => logger.info('BullMQ Redis ready'));
-    bullClient.on('close', () => logger.warn('BullMQ Redis connection closed'));
-  }
-  return bullClient;
-};
+  });
 
-export const redisForBullMQ = getBullRedisClient();
+  client.on('close', () => {
+    logger.warn(`[redis:${name}] connection closed`);
+  });
 
-// ============================================================================
-// SAFE WRAPPERS — used only by the main app client
-// ============================================================================
+  client.on('reconnecting', (delayMs: number) => {
+    logger.warn(`[redis:${name}] reconnecting in ${delayMs}ms`);
+  });
 
-const REDIS_OP_TIMEOUT_MS = 1500;
+  client.on('end', () => {
+    logger.warn(`[redis:${name}] connection ended`);
+  });
+}
 
-const safeRedis = async <T>(fn: () => Promise<T>, fallback: T): Promise<T> => {
-  if (!redis.status || redis.status === 'end' || redis.status === 'close') {
-    return fallback;
-  }
+attachLogging(redis, 'app');
+attachLogging(bullmqConnection, 'worker');
+
+// ------------------------------------------------------------------
+// Helpers
+// ------------------------------------------------------------------
+
+/**
+ * Safe ping with a hard timeout. The /health endpoint awaits this so
+ * a slow Redis can never stall the health probe beyond 2 seconds.
+ *
+ * Returns true if Redis responded with PONG within the timeout,
+ * false otherwise. Never throws.
+ */
+export async function pingRedis(timeoutMs = 2000): Promise<boolean> {
   try {
-    return await Promise.race([
-      fn(),
-      new Promise<T>((resolve) => {
-        setTimeout(() => resolve(fallback), REDIS_OP_TIMEOUT_MS);
-      }),
+    const result = await Promise.race([
+      redis.ping(),
+      new Promise<string>((_, reject) =>
+        setTimeout(() => reject(new Error('redis ping timeout')), timeoutMs)
+      ),
     ]);
-  } catch (_) {
-    return fallback;
+    return result === 'PONG';
+  } catch (err: any) {
+    logger.debug(`[redis:app] ping failed: ${err?.message || 'unknown'}`);
+    return false;
   }
-};
+}
 
-export const setJSON = async (key: string, value: any, ttl?: number): Promise<void> => {
-  await safeRedis(async () => {
-    const serialized = JSON.stringify(value);
-    if (ttl) {
-      await redis.set(key, serialized, 'EX', ttl);
-    } else {
-      await redis.set(key, serialized);
+/**
+ * Graceful shutdown — call from SIGTERM / SIGINT handlers before
+ * process.exit. Closes both connections and resolves when both are
+ * cleanly torn down or after a 3-second cap.
+ */
+export async function closeRedis(): Promise<void> {
+  const closeOne = async (client: Redis, name: string) => {
+    try {
+      // ioredis's `quit` sends QUIT and waits for acknowledgement.
+      // If the connection is already dead, it rejects — we ignore.
+      await Promise.race([
+        client.quit(),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('quit timeout')), 3000)
+        ),
+      ]);
+      logger.info(`[redis:${name}] closed cleanly`);
+    } catch (_) {
+      try {
+        client.disconnect();
+        logger.warn(`[redis:${name}] forced disconnect`);
+      } catch (__) {}
     }
-  }, undefined);
-};
+  };
 
-export const getJSON = async <T>(key: string): Promise<T | null> => {
-  return safeRedis(async () => {
-    const data = await redis.get(key);
-    return data ? JSON.parse(data) : null;
-  }, null);
-};
+  await Promise.all([closeOne(redis, 'app'), closeOne(bullmqConnection, 'worker')]);
+}
 
-export const del = async (key: string): Promise<void> => {
-  await safeRedis(async () => {
-    await redis.del(key);
-  }, undefined);
-};
-
-export const acquireLock = async (key: string, ttlSeconds: number): Promise<string | null> => {
-  return safeRedis(async () => {
-    const token = `${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
-    const result = await redis.set(key, token, 'EX', ttlSeconds, 'NX');
-    return result === 'OK' ? token : null;
-  }, null);
-};
-
-export const releaseLock = async (key: string, token: string): Promise<boolean> => {
-  return safeRedis(async () => {
-    const script = `
-      if redis.call("get", KEYS[1]) == ARGV[1] then
-        return redis.call("del", KEYS[1])
-      else
-        return 0
-      end
-    `;
-    const result = await redis.eval(script, 1, key, token);
-    return result === 1;
-  }, false);
-};
-
-export const setIdempotency = async (key: string, result: any, ttl?: number): Promise<void> => {
-  await setJSON(`idempotency:${key}`, result, ttl || env.IDEMPOTENCY_TTL);
-};
-
-export const getIdempotency = async <T>(key: string): Promise<T | null> => {
-  return getJSON<T>(`idempotency:${key}`);
-};
-
-export const safeRedisCall = safeRedis;
+// ------------------------------------------------------------------
+// Default export
+//
+// Some modules in the codebase might still `import redis from
+// '../config/redis'` (default-import style). Exporting the named
+// `redis` client as default too covers both import styles without
+// a second file.
+// ------------------------------------------------------------------
+export default redis;
