@@ -2,31 +2,25 @@
 import mongoose from 'mongoose';
 import { Student } from '../../models/Student';
 import { Class } from '../../models/Class';
-import { Parent } from '../../models/Parent';
 import { Invoice } from '../../models/Invoice';
 import { Payment } from '../../models/Payment';
 import { BadRequestError, NotFoundError } from '../../middleware/error.middleware';
 
 export class StudentService {
   /**
-   * Shape a raw student doc into the shape the frontend expects —
-   * flat className, guardian, guardianPhone. Every read path returns
-   * this so no client has to guess.
+   * Shape a raw student doc into the flat form the frontend expects.
    */
   private static shape(s: any, feeTotals?: { expected: number; paid: number }) {
     const primaryParent = Array.isArray(s.parentIds) ? s.parentIds[0] : null;
-    const className = s.classId?.name || (typeof s.classId === 'string' ? '—' : '—');
+    const className = s.classId?.name || '—';
 
     const expected = feeTotals?.expected ?? s.fees?.expected ?? 0;
     const paid = feeTotals?.paid ?? s.fees?.paid ?? 0;
     const status =
-      expected === 0
-        ? 'PAID'
-        : paid >= expected
-          ? 'PAID'
-          : paid > 0
-            ? 'PARTIAL'
-            : 'OUTSTANDING';
+      expected === 0 ? 'PAID'
+      : paid >= expected ? 'PAID'
+      : paid > 0 ? 'PARTIAL'
+      : 'OUTSTANDING';
 
     return {
       id: String(s._id),
@@ -53,10 +47,6 @@ export class StudentService {
     };
   }
 
-  /**
-   * Compute per-student expected/paid totals from invoices + payments.
-   * Called by list/getById so every response includes accurate fees.
-   */
   private static async feeTotalsForStudents(schoolId: string, studentIds: string[]) {
     const expectedByStudent = new Map<string, number>();
     const paidByStudent = new Map<string, number>();
@@ -99,7 +89,7 @@ export class StudentService {
 
   static async list(schoolId: string, query: any = {}) {
     const filter: any = { schoolId, status: { $ne: 'DELETED' } };
-    if (query.classId && mongoose.isValidObjectId(query.classId)) {
+    if (query?.classId && mongoose.isValidObjectId(query.classId)) {
       filter.classId = query.classId;
     }
 
@@ -117,6 +107,13 @@ export class StudentService {
     return students.map((s: any) => StudentService.shape(s, feeMap.get(String(s._id))));
   }
 
+  /**
+   * Alias used by controllers that expect `getAll`.
+   */
+  static async getAll(schoolId: string, query: any = {}) {
+    return StudentService.list(schoolId, query);
+  }
+
   static async getById(schoolId: string, id: string) {
     if (!mongoose.isValidObjectId(id)) throw new BadRequestError('Invalid student id');
     const student = await Student.findOne({ _id: id, schoolId })
@@ -129,10 +126,6 @@ export class StudentService {
     return StudentService.shape(student, feeMap.get(id));
   }
 
-  /**
-   * Create a student. Rejects missing classId — this was silently
-   * accepting null before and leaving students unassigned.
-   */
   static async create(schoolId: string, data: any) {
     if (!data?.firstName || !String(data.firstName).trim()) {
       throw new BadRequestError('First name is required');
@@ -150,7 +143,6 @@ export class StudentService {
     const cls = await Class.findOne({ _id: data.classId, schoolId });
     if (!cls) throw new BadRequestError('Class not found in this school.');
 
-    // Duplicate admission number check.
     const dup = await Student.findOne({
       schoolId,
       admissionNumber: String(data.admissionNumber).trim(),
@@ -165,16 +157,22 @@ export class StudentService {
       admissionNumber: String(data.admissionNumber).trim(),
       classId: data.classId,
       gender: data.gender || undefined,
-      dateOfBirth: data.dateOfBirth ? new Date(data.dateOfBirth) : undefined,
       address: data.address || undefined,
-      parentIds: Array.isArray(data.parentIds) ? data.parentIds.filter((p: any) => mongoose.isValidObjectId(p)) : [],
+      parentIds: Array.isArray(data.parentIds)
+        ? data.parentIds.filter((p: any) => mongoose.isValidObjectId(p))
+        : [],
       status: 'ACTIVE',
     };
+
+    // Only set dateOfBirth when we actually have one — avoids the
+    // "undefined not assignable to Date" issue.
+    if (data.dateOfBirth) {
+      payload.dateOfBirth = new Date(data.dateOfBirth);
+    }
 
     const student = new Student(payload);
     await student.save();
 
-    // Re-query to return the populated shape the frontend expects.
     return StudentService.getById(schoolId, String(student._id));
   }
 
@@ -200,7 +198,13 @@ export class StudentService {
       student.classId = data.classId;
     }
     if (data.gender !== undefined) student.gender = data.gender;
-    if (data.dateOfBirth !== undefined) student.dateOfBirth = data.dateOfBirth ? new Date(data.dateOfBirth) : undefined;
+    if (data.dateOfBirth !== undefined) {
+      if (data.dateOfBirth) {
+        student.dateOfBirth = new Date(data.dateOfBirth);
+      } else {
+        student.set('dateOfBirth', undefined);
+      }
+    }
     if (data.address !== undefined) student.address = data.address;
     if (data.parentIds !== undefined && Array.isArray(data.parentIds)) {
       student.parentIds = data.parentIds.filter((p: any) => mongoose.isValidObjectId(p));
