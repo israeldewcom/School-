@@ -1,62 +1,100 @@
-import { Queue } from 'bullmq';
+// src/jobs/queues.ts
+import { Queue, QueueOptions } from 'bullmq';
 import { redisForBullMQ } from '../config/redis';
 import logger from '../config/logger';
 
-// ============================================================================
-// QUEUES
-// ============================================================================
-// All Queue instances use redisForBullMQ — a dedicated connection with
-// maxRetriesPerRequest: null, which BullMQ hard-requires. Passing the
-// app-level `redis` client here causes this crash at startup:
-//
-//   Error: BullMQ: Your redis options maxRetriesPerRequest must be null.
+const baseOptions: QueueOptions = {
+  connection: redisForBullMQ as any,
+  defaultJobOptions: {
+    attempts: 3,
+    backoff: { type: 'exponential', delay: 5000 },
+    removeOnComplete: { count: 200 },
+    removeOnFail: { count: 500 },
+  },
+};
 
-export const smsQueue = new Queue('schoolflow_sms', { connection: redisForBullMQ });
-export const emailQueue = new Queue('schoolflow_email', { connection: redisForBullMQ });
-export const pdfQueue = new Queue('schoolflow_pdf', { connection: redisForBullMQ });
-export const paymentQueue = new Queue('schoolflow_payments', { connection: redisForBullMQ });
-export const automationQueue = new Queue('schoolflow_automations', { connection: redisForBullMQ });
-export const reportQueue = new Queue('schoolflow_reports', { connection: redisForBullMQ });
-export const notificationQueue = new Queue('schoolflow_notifications', { connection: redisForBullMQ });
-export const reconciliationQueue = new Queue('schoolflow_reconciliation', { connection: redisForBullMQ });
-export const expiryQueue = new Queue('schoolflow_expiry', { connection: redisForBullMQ });
+export const smsQueue = new Queue('sms', baseOptions);
+export const emailQueue = new Queue('email', baseOptions);
+export const notificationQueue = new Queue('notification', baseOptions);
+export const pdfQueue = new Queue('pdf', baseOptions);
+export const reportQueue = new Queue('reports', baseOptions);
+export const paymentQueue = new Queue('payments', baseOptions);
+export const automationQueue = new Queue('automations', baseOptions);
+export const expiryQueue = new Queue('expiry', baseOptions);
+export const reconciliationQueue = new Queue('reconciliation', baseOptions);
 
-// ============================================================================
-// safeQueueAdd
-// ============================================================================
-// Races queue.add() against a short timeout so a slow or unreachable Redis
-// can't hang the HTTP request that's awaiting the enqueue. Callers must
-// treat null as "job not queued" and continue.
-export const safeQueueAdd = async <T = any>(
+/**
+ * Wraps Queue.add so a Redis outage returns null instead of throwing.
+ * Callers can check the return value: null means "queued in memory
+ * but not persisted" — never treat null as success.
+ */
+export async function safeQueueAdd(
   queue: Queue,
-  jobName: string,
+  name: string,
   data: any,
-  opts: any = {},
-  timeoutMs: number = 3000
-): Promise<T | null> => {
+  opts: any = {}
+): Promise<any | null> {
   try {
-    return await Promise.race([
-      queue.add(jobName, data, opts) as Promise<T>,
-      new Promise<null>((_, reject) =>
-        setTimeout(() => reject(new Error(`Queue ${queue.name} timed out`)), timeoutMs)
-      ),
-    ]);
+    const job = await queue.add(name, data, opts);
+    logger.debug(`Queued ${queue.name}/${name} → job ${job.id}`);
+    return job;
   } catch (err: any) {
-    logger.error(`safeQueueAdd(${queue.name}/${jobName}) failed: ${err.message}`);
+    logger.error(`safeQueueAdd failed for ${queue.name}/${name}: ${err?.message}`, {
+      stack: err?.stack,
+    });
     return null;
   }
-};
+}
 
-export const closeAllQueues = async () => {
-  await Promise.all([
-    smsQueue.close(),
-    emailQueue.close(),
-    pdfQueue.close(),
-    paymentQueue.close(),
-    automationQueue.close(),
-    reportQueue.close(),
-    notificationQueue.close(),
-    reconciliationQueue.close(),
-    expiryQueue.close(),
-  ]);
-};
+/**
+ * Get queue status for the Queue Status page.
+ */
+export async function getAllQueueStatus() {
+  const queues = [
+    { name: 'sms', q: smsQueue },
+    { name: 'email', q: emailQueue },
+    { name: 'notification', q: notificationQueue },
+    { name: 'pdf', q: pdfQueue },
+    { name: 'reports', q: reportQueue },
+    { name: 'payments', q: paymentQueue },
+    { name: 'automations', q: automationQueue },
+    { name: 'expiry', q: expiryQueue },
+    { name: 'reconciliation', q: reconciliationQueue },
+  ];
+
+  const results = [];
+  for (const { name, q } of queues) {
+    try {
+      const [waiting, active, completed, failed, paused] = await Promise.all([
+        q.getWaitingCount(),
+        q.getActiveCount(),
+        q.getCompletedCount(),
+        q.getFailedCount(),
+        q.isPaused(),
+      ]);
+      results.push({
+        name,
+        count: waiting + active,
+        waiting,
+        active,
+        completed,
+        failed,
+        progress: completed > 0 ? Math.round((completed / (completed + failed)) * 100) : 0,
+        isPaused: paused,
+      });
+    } catch (err: any) {
+      results.push({
+        name,
+        count: 0,
+        waiting: 0,
+        active: 0,
+        completed: 0,
+        failed: 0,
+        progress: 0,
+        isPaused: true,
+        error: err?.message,
+      });
+    }
+  }
+  return results;
+}
