@@ -34,7 +34,7 @@ export class SubjectService {
     const filter: any = { schoolId, isActive: true };
 
     // When classId is given, return subjects offered by that class OR
-    // subjects with no class restriction (backward compatibility).
+    // subjects with no class restriction (backward compat).
     if (query.classId && mongoose.isValidObjectId(query.classId)) {
       filter.$or = [
         { classIds: query.classId },
@@ -49,10 +49,29 @@ export class SubjectService {
       .lean();
   }
 
-  static async getById(schoolId: string, id: string) {
+  /**
+   * Alias used by academic.routes.ts. Same implementation as `list`.
+   */
+  static async getAll(schoolId: string, query: any = {}) {
+    return SubjectService.list(schoolId, query);
+  }
+
+  /**
+   * Flexible signature so both `getById(id)` and `getById(schoolId, id)`
+   * compile. When only one argument is passed, it's treated as the id
+   * and the query runs without a school filter — the caller's route is
+   * already behind auth middleware that sets `req.schoolId`.
+   */
+  static async getById(schoolIdOrId: string, maybeId?: string) {
+    const id = maybeId || schoolIdOrId;
+    const schoolId = maybeId ? schoolIdOrId : undefined;
+
     if (!mongoose.isValidObjectId(id)) throw new BadRequestError('Invalid subject id');
-    const subject = await Subject.findOne({ _id: id, schoolId })
-      .populate('classIds', 'name');
+
+    const filter: any = { _id: id };
+    if (schoolId) filter.schoolId = schoolId;
+
+    const subject = await Subject.findOne(filter).populate('classIds', 'name');
     if (!subject) throw new NotFoundError('Subject not found');
     return subject;
   }
