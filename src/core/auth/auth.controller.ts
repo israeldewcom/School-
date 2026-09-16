@@ -54,18 +54,20 @@ export class AuthController {
     } catch (err) { next(err); }
   }
 
-  // Best-effort stubs for the routes that exist but aren't fully wired.
-  static async registerFirst(req: Request, res: Response, next: NextFunction) {
+  // Stubs — the underscore prefix on `_req` silences the unused-param
+  // check while keeping the (req, res, next) shape Express expects.
+  static async registerFirst(_req: Request, res: Response, next: NextFunction) {
     try {
-      // Delegate to SchoolController if it exists; otherwise return a clear error.
       res.status(501).json({ success: false, message: 'register-first not implemented here' });
     } catch (err) { next(err); }
   }
 
-  static async forgotPassword(req: Request, res: Response, next: NextFunction) {
+  static async forgotPassword(_req: Request, res: Response, next: NextFunction) {
     try {
-      // Best-effort: respond success so the frontend shows the "contact owner" path.
-      res.json({ success: true, data: { sent: false, message: 'Contact your school owner to reset your password.' } });
+      res.json({
+        success: true,
+        data: { sent: false, message: 'Contact your school owner to reset your password.' },
+      });
     } catch (err) { next(err); }
   }
 }
