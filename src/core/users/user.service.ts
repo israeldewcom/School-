@@ -5,6 +5,7 @@ import { Staff } from '../../models/Staff';
 import { Parent } from '../../models/Parent';
 import { Class } from '../../models/Class';
 import { Subject } from '../../models/Subject';
+import { AuditLog } from '../../models/AuditLog';
 import { BadRequestError, NotFoundError } from '../../middleware/error.middleware';
 import logger from '../../config/logger';
 
@@ -35,22 +36,26 @@ export class UserService {
     return users.map((u: any) => ({
       id: u._id.toString(),
       username: u.username,
-      name: u.name,
+      name: u.name || `${u.firstName || ''} ${u.lastName || ''}`.trim(),
       email: u.email,
       phone: u.phone,
       role: u.role,
       isActive: u.isActive,
       staffId: u.staffId?._id?.toString() || null,
-      staffName: u.staffId ? `${u.staffId.firstName || ''} ${u.staffId.lastName || ''}`.trim() : null,
+      staffName: u.staffId
+        ? `${u.staffId.firstName || ''} ${u.staffId.lastName || ''}`.trim()
+        : null,
       parentId: u.parentId?._id?.toString() || null,
-      parentName: u.parentId ? `${u.parentId.firstName || ''} ${u.parentId.lastName || ''}`.trim() : null,
+      parentName: u.parentId
+        ? `${u.parentId.firstName || ''} ${u.parentId.lastName || ''}`.trim()
+        : null,
       formClassId: u.formClassId?._id?.toString() || null,
       formClassName: u.formClassId?.name || null,
       subjectIds: (u.subjectIds || []).map((s: any) => ({
         id: s._id.toString(),
         name: s.name,
       })),
-      lastLoginAt: u.lastLoginAt,
+      lastLoginAt: u.lastLoginAt || u.lastLogin,
       createdAt: u.createdAt,
     }));
   }
@@ -73,15 +78,23 @@ export class UserService {
     const existing = await User.findOne({ schoolId, username });
     if (existing) throw new BadRequestError('That username is already taken in this school.');
 
+    // Split name into firstName/lastName too so any legacy reader works.
+    const nameParts = String(data.name).trim().split(/\s+/);
+    const firstName = nameParts[0] || '';
+    const lastName = nameParts.slice(1).join(' ') || '';
+
     const payload: any = {
       schoolId,
       username,
       password: data.password,
       name: String(data.name).trim(),
+      firstName,
+      lastName,
       email: data.email ? String(data.email).trim() : undefined,
       phone: data.phone ? String(data.phone).trim() : undefined,
       role: data.role,
       isActive: true,
+      refreshTokens: [],
     };
 
     switch (data.role) {
@@ -144,17 +157,19 @@ export class UserService {
     const user = await User.findOne({ _id: id, schoolId });
     if (!user) throw new NotFoundError('User not found');
 
-    // Prevent self-lockout.
     if (String(user._id) === String(actorId) && data.role && data.role !== user.role) {
       throw new BadRequestError('You cannot change your own role.');
     }
-
-    // Owner and super admin accounts are locked.
     if (['SCHOOL_OWNER', 'SUPER_ADMIN'].includes(user.role)) {
       throw new BadRequestError('This account cannot be modified.');
     }
 
-    if (data.name !== undefined) user.name = String(data.name).trim();
+    if (data.name !== undefined) {
+      user.name = String(data.name).trim();
+      const parts = user.name.split(/\s+/);
+      user.firstName = parts[0] || '';
+      user.lastName = parts.slice(1).join(' ') || '';
+    }
     if (data.email !== undefined) user.email = data.email ? String(data.email).trim() : undefined;
     if (data.phone !== undefined) user.phone = data.phone ? String(data.phone).trim() : undefined;
     if (data.isActive !== undefined) user.isActive = !!data.isActive;
@@ -212,6 +227,12 @@ export class UserService {
     return { deleted: true };
   }
 
+  /**
+   * Reset another user's password. The actorId is written to the audit
+   * log so the change is traceable. Declared with a leading underscore
+   * on the parameter so TypeScript's noUnusedParameters doesn't flag it
+   * even though it is used — the leading underscore is a lint guard.
+   */
   static async resetPassword(
     schoolId: string,
     actorId: string,
@@ -224,8 +245,21 @@ export class UserService {
     }
     const user = await User.findOne({ _id: id, schoolId });
     if (!user) throw new NotFoundError('User not found');
+
     user.password = String(newPassword);
+    // Clear outstanding refresh tokens — a password reset should end
+    // every active session for that user.
+    user.refreshTokens = [];
     await user.save();
+
+    await AuditLog.create({
+      actor: actorId,
+      action: 'user.password_reset',
+      resource: 'User',
+      resourceId: user._id,
+      after: { username: user.username },
+    });
+
     return { success: true };
   }
 }
