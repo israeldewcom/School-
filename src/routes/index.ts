@@ -1,3 +1,4 @@
+// src/routes/index.ts
 import express from 'express';
 import authRoutes from '../core/auth/auth.routes';
 import schoolRoutes from '../core/schools/school.routes';
@@ -25,36 +26,35 @@ import exportRoutes from '../core/export/export.routes';
 import staffRoutes from '../core/staff/staff.routes';
 import examRoutes from '../core/exams/exam.routes';
 import defaultersRoutes from '../core/defaulters/defaulters.routes';
+import userRoutes from '../core/users/user.routes';
 import { SchoolController } from '../core/schools/school.controller';
-import { authMiddleware, requireSchoolMembership, requireSchoolContext } from '../middleware/auth.middleware';
+import {
+  authMiddleware,
+  requireSchoolMembership,
+  requireSchoolContext,
+} from '../middleware/auth.middleware';
 import { requireActiveSubscription } from '../middleware/subscription.middleware';
 import { checkEntitlement } from '../middleware/entitlement.middleware';
 
 const router = express.Router();
 
-// ============================================================
-// 1. PUBLIC ROUTES
-// ============================================================
+// 1. Public
 router.use('/auth', authRoutes);
 router.use('/webhooks', webhookRoutes);
-
 router.get('/schools/ping', SchoolController.ping);
 router.post('/schools/onboard', SchoolController.onboard);
 
-// ============================================================
-// 2. PROTECTED (AUTHENTICATED) ROUTES
-// ============================================================
+// 2. Authenticated
 router.use(authMiddleware);
 router.use('/platform', platformRoutes);
 
-// ============================================================
-// 3. SCHOOL-SCOPED ROUTES
-// ============================================================
+// 3. School-scoped
 router.use(requireSchoolMembership);
 router.use(requireSchoolContext);
 router.use(requireActiveSubscription);
 
 router.use('/schools', schoolRoutes);
+router.use('/users', userRoutes);                               // ← new
 router.use('/students', checkEntitlement('students'), studentRoutes);
 router.use('/parents', parentRoutes);
 router.use('/classes', classRoutes);
@@ -68,7 +68,7 @@ router.use('/attendance', attendanceRoutes);
 router.use('/exams', examRoutes);
 router.use('/defaulters', defaultersRoutes);
 
-// Report-card templates must come BEFORE /report-cards/:id.
+// Report card templates BEFORE /report-cards/:id
 router.use('/report-cards/templates', reportCardTemplateRoutes);
 router.use('/report-cards', reportCardRoutes);
 
