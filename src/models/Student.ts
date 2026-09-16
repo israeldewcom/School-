@@ -5,13 +5,14 @@ export interface IStudent extends Document {
   schoolId: mongoose.Types.ObjectId;
   firstName: string;
   lastName: string;
-  fullName: string;                    // ← added (was missing)
+  fullName: string;
   admissionNumber: string;
   classId: mongoose.Types.ObjectId;
   parentIds: mongoose.Types.ObjectId[];
   gender?: string;
   dateOfBirth?: Date;
   address?: string;
+  photo?: string;              // ← added — report card service reads this
   status: 'ACTIVE' | 'INACTIVE' | 'GRADUATED' | 'DELETED';
   fees?: {
     expected?: number;
@@ -33,6 +34,7 @@ const StudentSchema = new Schema<IStudent>(
     gender: { type: String, enum: ['MALE', 'FEMALE'], default: undefined },
     dateOfBirth: { type: Date },
     address: { type: String },
+    photo: { type: String },     // base64 data URL or hosted URL
     status: {
       type: String,
       enum: ['ACTIVE', 'INACTIVE', 'GRADUATED', 'DELETED'],
@@ -50,7 +52,6 @@ const StudentSchema = new Schema<IStudent>(
 StudentSchema.index({ schoolId: 1, admissionNumber: 1 }, { unique: true });
 StudentSchema.index({ schoolId: 1, classId: 1 });
 
-// Keep fullName in sync whenever firstName or lastName changes.
 StudentSchema.pre('save', function (next) {
   if (this.isModified('firstName') || this.isModified('lastName')) {
     this.fullName = `${this.firstName || ''} ${this.lastName || ''}`.trim();
