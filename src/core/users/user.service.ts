@@ -34,25 +34,25 @@ export class UserService {
       .lean();
 
     return users.map((u: any) => ({
-      id: u._id.toString(),
+      id: String(u._id),
       username: u.username,
       name: u.name || `${u.firstName || ''} ${u.lastName || ''}`.trim(),
       email: u.email,
       phone: u.phone,
       role: u.role,
       isActive: u.isActive,
-      staffId: u.staffId?._id?.toString() || null,
+      staffId: u.staffId?._id ? String(u.staffId._id) : null,
       staffName: u.staffId
         ? `${u.staffId.firstName || ''} ${u.staffId.lastName || ''}`.trim()
         : null,
-      parentId: u.parentId?._id?.toString() || null,
+      parentId: u.parentId?._id ? String(u.parentId._id) : null,
       parentName: u.parentId
         ? `${u.parentId.firstName || ''} ${u.parentId.lastName || ''}`.trim()
         : null,
-      formClassId: u.formClassId?._id?.toString() || null,
+      formClassId: u.formClassId?._id ? String(u.formClassId._id) : null,
       formClassName: u.formClassId?.name || null,
       subjectIds: (u.subjectIds || []).map((s: any) => ({
-        id: s._id.toString(),
+        id: String(s._id),
         name: s.name,
       })),
       lastLoginAt: u.lastLoginAt || u.lastLogin,
@@ -61,16 +61,16 @@ export class UserService {
   }
 
   static async create(schoolId: string, createdBy: string, data: any) {
-    if (!data.username || String(data.username).trim().length < 3) {
+    if (!data?.username || String(data.username).trim().length < 3) {
       throw new BadRequestError('Username must be at least 3 characters');
     }
-    if (!data.password || String(data.password).length < 6) {
+    if (!data?.password || String(data.password).length < 6) {
       throw new BadRequestError('Password must be at least 6 characters');
     }
-    if (!data.name || !String(data.name).trim()) {
+    if (!data?.name || !String(data.name).trim()) {
       throw new BadRequestError('Display name is required');
     }
-    if (!data.role || !CREATABLE_ROLES.includes(data.role)) {
+    if (!data?.role || !CREATABLE_ROLES.includes(data.role)) {
       throw new BadRequestError(`Role must be one of: ${CREATABLE_ROLES.join(', ')}`);
     }
 
@@ -78,10 +78,23 @@ export class UserService {
     const existing = await User.findOne({ schoolId, username });
     if (existing) throw new BadRequestError('That username is already taken in this school.');
 
-    // Split name into firstName/lastName too so any legacy reader works.
     const nameParts = String(data.name).trim().split(/\s+/);
     const firstName = nameParts[0] || '';
     const lastName = nameParts.slice(1).join(' ') || '';
+
+    // Always set a unique email. When the caller doesn't provide one,
+    // build a deterministic placeholder so the unique index never sees
+    // two nulls. This fixes "A record with that email already exists".
+    const providedEmail = data.email && String(data.email).trim();
+    const email = providedEmail
+      ? String(providedEmail).toLowerCase()
+      : `${username}.${Date.now().toString(36)}@${String(schoolId).slice(-6)}.local`;
+
+    // Guard against a duplicate provided email.
+    if (providedEmail) {
+      const dup = await User.findOne({ schoolId, email: email.toLowerCase() });
+      if (dup) throw new BadRequestError('A user with that email already exists in this school.');
+    }
 
     const payload: any = {
       schoolId,
@@ -90,7 +103,7 @@ export class UserService {
       name: String(data.name).trim(),
       firstName,
       lastName,
-      email: data.email ? String(data.email).trim() : undefined,
+      email,
       phone: data.phone ? String(data.phone).trim() : undefined,
       role: data.role,
       isActive: true,
@@ -148,6 +161,16 @@ export class UserService {
     const user = new User(payload);
     await user.save();
 
+    try {
+      await AuditLog.create({
+        actor: createdBy,
+        action: 'user.created',
+        resource: 'User',
+        resourceId: user._id,
+        after: { username, role: data.role },
+      });
+    } catch (_) {}
+
     logger.info(`User created: ${username} (${data.role}) by ${createdBy}`, { schoolId });
     return User.findById(user._id).select('-password').lean();
   }
@@ -170,7 +193,17 @@ export class UserService {
       user.firstName = parts[0] || '';
       user.lastName = parts.slice(1).join(' ') || '';
     }
-    if (data.email !== undefined) user.email = data.email ? String(data.email).trim() : undefined;
+    if (data.email !== undefined) {
+      if (data.email) {
+        const lower = String(data.email).toLowerCase().trim();
+        const dup = await User.findOne({ schoolId, email: lower, _id: { $ne: id } });
+        if (dup) throw new BadRequestError('That email is already used by another user.');
+        user.email = lower;
+      } else {
+        // Never leave email null — regenerate the placeholder.
+        user.email = `${user.username}.${Date.now().toString(36)}@${String(schoolId).slice(-6)}.local`;
+      }
+    }
     if (data.phone !== undefined) user.phone = data.phone ? String(data.phone).trim() : undefined;
     if (data.isActive !== undefined) user.isActive = !!data.isActive;
 
@@ -185,9 +218,7 @@ export class UserService {
     }
 
     if (data.formClassId !== undefined) {
-      if (!mongoose.isValidObjectId(data.formClassId)) {
-        throw new BadRequestError('Invalid class id');
-      }
+      if (!mongoose.isValidObjectId(data.formClassId)) throw new BadRequestError('Invalid class id');
       const cls = await Class.findOne({ _id: data.formClassId, schoolId });
       if (!cls) throw new BadRequestError('Class not found');
       user.formClassId = data.formClassId;
@@ -197,9 +228,7 @@ export class UserService {
       const ids = Array.isArray(data.subjectIds)
         ? data.subjectIds.filter((s: any) => mongoose.isValidObjectId(s))
         : [];
-      const found = await Subject.find({ _id: { $in: ids }, schoolId })
-        .select('_id')
-        .lean();
+      const found = await Subject.find({ _id: { $in: ids }, schoolId }).select('_id').lean();
       if (found.length !== ids.length) throw new BadRequestError('One or more subjects invalid');
       user.subjectIds = ids;
     }
@@ -227,12 +256,6 @@ export class UserService {
     return { deleted: true };
   }
 
-  /**
-   * Reset another user's password. The actorId is written to the audit
-   * log so the change is traceable. Declared with a leading underscore
-   * on the parameter so TypeScript's noUnusedParameters doesn't flag it
-   * even though it is used — the leading underscore is a lint guard.
-   */
   static async resetPassword(
     schoolId: string,
     actorId: string,
@@ -245,20 +268,19 @@ export class UserService {
     }
     const user = await User.findOne({ _id: id, schoolId });
     if (!user) throw new NotFoundError('User not found');
-
     user.password = String(newPassword);
-    // Clear outstanding refresh tokens — a password reset should end
-    // every active session for that user.
     user.refreshTokens = [];
     await user.save();
 
-    await AuditLog.create({
-      actor: actorId,
-      action: 'user.password_reset',
-      resource: 'User',
-      resourceId: user._id,
-      after: { username: user.username },
-    });
+    try {
+      await AuditLog.create({
+        actor: actorId,
+        action: 'user.password_reset',
+        resource: 'User',
+        resourceId: user._id,
+        after: { username: user.username },
+      });
+    } catch (_) {}
 
     return { success: true };
   }
