@@ -1,96 +1,231 @@
+// src/core/users/user.service.ts
+import mongoose from 'mongoose';
 import { User } from '../../models/User';
-import { NotFoundError, BadRequestError, ForbiddenError } from '../../utils/errors';
-import argon2 from 'argon2';
+import { Staff } from '../../models/Staff';
+import { Parent } from '../../models/Parent';
+import { Class } from '../../models/Class';
+import { Subject } from '../../models/Subject';
+import { BadRequestError, NotFoundError } from '../../middleware/error.middleware';
+import logger from '../../config/logger';
+
+const CREATABLE_ROLES = [
+  'ADMIN',
+  'HEAD_TEACHER',
+  'FORM_TEACHER',
+  'SUBJECT_TEACHER',
+  'BURSAR',
+  'PARENT',
+  'STAFF',
+];
 
 export class UserService {
-  // SUPER_ADMIN may pass a schoolId to scope to a specific tenant.
-  // Everyone else is silently scoped to their own schoolId — the passed-in
-  // value is ignored so a client can't read another tenant's users.
-  static resolveScope(caller: any, requestedSchoolId?: string): string | null {
-    if (caller?.role === 'SUPER_ADMIN') {
-      return requestedSchoolId || null;
-    }
-    return caller?.schoolId?.toString() || null;
+  static async list(schoolId: string, query: any = {}) {
+    const filter: any = { schoolId };
+    if (query.role) filter.role = query.role;
+    if (query.isActive !== undefined) filter.isActive = query.isActive === 'true';
+
+    const users = await User.find(filter)
+      .populate('staffId', 'firstName lastName')
+      .populate('parentId', 'firstName lastName phone')
+      .populate('formClassId', 'name')
+      .populate('subjectIds', 'name')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    return users.map((u: any) => ({
+      id: u._id.toString(),
+      username: u.username,
+      name: u.name,
+      email: u.email,
+      phone: u.phone,
+      role: u.role,
+      isActive: u.isActive,
+      staffId: u.staffId?._id?.toString() || null,
+      staffName: u.staffId ? `${u.staffId.firstName || ''} ${u.staffId.lastName || ''}`.trim() : null,
+      parentId: u.parentId?._id?.toString() || null,
+      parentName: u.parentId ? `${u.parentId.firstName || ''} ${u.parentId.lastName || ''}`.trim() : null,
+      formClassId: u.formClassId?._id?.toString() || null,
+      formClassName: u.formClassId?.name || null,
+      subjectIds: (u.subjectIds || []).map((s: any) => ({
+        id: s._id.toString(),
+        name: s.name,
+      })),
+      lastLoginAt: u.lastLoginAt,
+      createdAt: u.createdAt,
+    }));
   }
 
-  static async create(data: any, caller: any) {
-    const schoolId = UserService.resolveScope(caller, data.schoolId);
-    if (!schoolId) throw new ForbiddenError('Cannot determine school context');
+  static async create(schoolId: string, createdBy: string, data: any) {
+    if (!data.username || String(data.username).trim().length < 3) {
+      throw new BadRequestError('Username must be at least 3 characters');
+    }
+    if (!data.password || String(data.password).length < 6) {
+      throw new BadRequestError('Password must be at least 6 characters');
+    }
+    if (!data.name || !String(data.name).trim()) {
+      throw new BadRequestError('Display name is required');
+    }
+    if (!data.role || !CREATABLE_ROLES.includes(data.role)) {
+      throw new BadRequestError(`Role must be one of: ${CREATABLE_ROLES.join(', ')}`);
+    }
 
-    // Reject attempts to escalate privilege from a non-SUPER_ADMIN caller.
-    if (caller?.role !== 'SUPER_ADMIN') {
-      const disallowed = ['SUPER_ADMIN'];
-      if (disallowed.includes(data.role)) {
-        throw new ForbiddenError('Only platform admins can create super admins');
+    const username = String(data.username).toLowerCase().trim();
+    const existing = await User.findOne({ schoolId, username });
+    if (existing) throw new BadRequestError('That username is already taken in this school.');
+
+    const payload: any = {
+      schoolId,
+      username,
+      password: data.password,
+      name: String(data.name).trim(),
+      email: data.email ? String(data.email).trim() : undefined,
+      phone: data.phone ? String(data.phone).trim() : undefined,
+      role: data.role,
+      isActive: true,
+    };
+
+    switch (data.role) {
+      case 'FORM_TEACHER': {
+        if (!data.formClassId || !mongoose.isValidObjectId(data.formClassId)) {
+          throw new BadRequestError('A form teacher must be assigned to a class.');
+        }
+        const cls = await Class.findOne({ _id: data.formClassId, schoolId });
+        if (!cls) throw new BadRequestError('Class not found.');
+        payload.formClassId = data.formClassId;
+        break;
+      }
+      case 'SUBJECT_TEACHER': {
+        const subjectIds = Array.isArray(data.subjectIds)
+          ? data.subjectIds.filter((s: any) => mongoose.isValidObjectId(s))
+          : [];
+        if (subjectIds.length === 0) {
+          throw new BadRequestError('A subject teacher must be assigned at least one subject.');
+        }
+        const found = await Subject.find({ _id: { $in: subjectIds }, schoolId })
+          .select('_id')
+          .lean();
+        if (found.length !== subjectIds.length) {
+          throw new BadRequestError('One or more subjects do not belong to this school.');
+        }
+        payload.subjectIds = subjectIds;
+        break;
+      }
+      case 'PARENT': {
+        if (!data.parentId || !mongoose.isValidObjectId(data.parentId)) {
+          throw new BadRequestError('A parent login must be linked to a parent record.');
+        }
+        const parent = await Parent.findOne({ _id: data.parentId, schoolId });
+        if (!parent) throw new BadRequestError('Parent record not found.');
+        payload.parentId = data.parentId;
+        break;
+      }
+      case 'BURSAR':
+      case 'ADMIN':
+      case 'HEAD_TEACHER':
+      case 'STAFF': {
+        if (data.staffId && mongoose.isValidObjectId(data.staffId)) {
+          const staff = await Staff.findOne({ _id: data.staffId, schoolId });
+          if (!staff) throw new BadRequestError('Staff record not found.');
+          payload.staffId = data.staffId;
+        }
+        break;
       }
     }
 
-    const existing = await User.findOne({ email: data.email });
-    if (existing) throw new BadRequestError('Email already in use');
-
-    const existingUsername = await User.findOne({ username: data.username });
-    if (existingUsername) throw new BadRequestError('Username already taken');
-
-    const user = new User({
-      ...data,
-      schoolId,
-      // Only SUPER_ADMIN can override these; strip for everyone else.
-      isActive: caller?.role === 'SUPER_ADMIN' ? (data.isActive ?? true) : true,
-    });
+    const user = new User(payload);
     await user.save();
-    return user;
+
+    logger.info(`User created: ${username} (${data.role}) by ${createdBy}`, { schoolId });
+    return User.findById(user._id).select('-password').lean();
   }
 
-  static async getById(id: string, caller: any) {
-    const schoolId = UserService.resolveScope(caller);
-    const query: any = { _id: id };
-    if (schoolId) query.schoolId = schoolId;
-
-    const user = await User.findOne(query).select('-password -refreshTokens');
+  static async update(schoolId: string, actorId: string, id: string, data: any) {
+    if (!mongoose.isValidObjectId(id)) throw new BadRequestError('Invalid user id');
+    const user = await User.findOne({ _id: id, schoolId });
     if (!user) throw new NotFoundError('User not found');
-    return user;
-  }
 
-  static async getAll(query: any, caller: any) {
-    const schoolId = UserService.resolveScope(caller, query?.schoolId);
-    const { schoolId: _ignored, ...safeQuery } = query || {};
-
-    const filter: any = { ...safeQuery };
-    if (schoolId) filter.schoolId = schoolId;
-
-    return User.find(filter).select('-password -refreshTokens');
-  }
-
-  static async update(id: string, data: any, caller: any) {
-    const schoolId = UserService.resolveScope(caller);
-    const query: any = { _id: id };
-    if (schoolId) query.schoolId = schoolId;
-
-    // Non-super-admins cannot change role, schoolId, or isActive.
-    const sanitized = { ...data };
-    if (caller?.role !== 'SUPER_ADMIN') {
-      delete sanitized.role;
-      delete sanitized.schoolId;
-      delete sanitized.isActive;
+    // Prevent self-lockout.
+    if (String(user._id) === String(actorId) && data.role && data.role !== user.role) {
+      throw new BadRequestError('You cannot change your own role.');
     }
 
-    if (sanitized.password) {
-      sanitized.password = await argon2.hash(sanitized.password);
+    // Owner and super admin accounts are locked.
+    if (['SCHOOL_OWNER', 'SUPER_ADMIN'].includes(user.role)) {
+      throw new BadRequestError('This account cannot be modified.');
     }
 
-    const user = await User.findOneAndUpdate(query, sanitized, { new: true })
-      .select('-password -refreshTokens');
-    if (!user) throw new NotFoundError('User not found');
-    return user;
+    if (data.name !== undefined) user.name = String(data.name).trim();
+    if (data.email !== undefined) user.email = data.email ? String(data.email).trim() : undefined;
+    if (data.phone !== undefined) user.phone = data.phone ? String(data.phone).trim() : undefined;
+    if (data.isActive !== undefined) user.isActive = !!data.isActive;
+
+    if (data.role && data.role !== user.role) {
+      if (!CREATABLE_ROLES.includes(data.role)) {
+        throw new BadRequestError(`Role must be one of: ${CREATABLE_ROLES.join(', ')}`);
+      }
+      user.set('formClassId', undefined);
+      user.set('subjectIds', []);
+      user.set('parentId', undefined);
+      user.role = data.role;
+    }
+
+    if (data.formClassId !== undefined) {
+      if (!mongoose.isValidObjectId(data.formClassId)) {
+        throw new BadRequestError('Invalid class id');
+      }
+      const cls = await Class.findOne({ _id: data.formClassId, schoolId });
+      if (!cls) throw new BadRequestError('Class not found');
+      user.formClassId = data.formClassId;
+    }
+
+    if (data.subjectIds !== undefined) {
+      const ids = Array.isArray(data.subjectIds)
+        ? data.subjectIds.filter((s: any) => mongoose.isValidObjectId(s))
+        : [];
+      const found = await Subject.find({ _id: { $in: ids }, schoolId })
+        .select('_id')
+        .lean();
+      if (found.length !== ids.length) throw new BadRequestError('One or more subjects invalid');
+      user.subjectIds = ids;
+    }
+
+    if (data.password && String(data.password).length >= 6) {
+      user.password = String(data.password);
+    }
+
+    await user.save();
+    return User.findById(user._id).select('-password').lean();
   }
 
-  static async delete(id: string, caller: any) {
-    const schoolId = UserService.resolveScope(caller);
-    const query: any = { _id: id };
-    if (schoolId) query.schoolId = schoolId;
-
-    const user = await User.findOneAndDelete(query);
+  static async delete(schoolId: string, actorId: string, id: string) {
+    if (!mongoose.isValidObjectId(id)) throw new BadRequestError('Invalid user id');
+    if (String(id) === String(actorId)) {
+      throw new BadRequestError('You cannot delete your own account.');
+    }
+    const user = await User.findOne({ _id: id, schoolId });
     if (!user) throw new NotFoundError('User not found');
-    return user;
+    if (['SCHOOL_OWNER', 'SUPER_ADMIN'].includes(user.role)) {
+      throw new BadRequestError('This account cannot be deleted.');
+    }
+    await User.findByIdAndDelete(id);
+    logger.info(`User deleted: ${user.username} by ${actorId}`, { schoolId });
+    return { deleted: true };
+  }
+
+  static async resetPassword(
+    schoolId: string,
+    actorId: string,
+    id: string,
+    newPassword: string
+  ) {
+    if (!mongoose.isValidObjectId(id)) throw new BadRequestError('Invalid user id');
+    if (!newPassword || String(newPassword).length < 6) {
+      throw new BadRequestError('Password must be at least 6 characters');
+    }
+    const user = await User.findOne({ _id: id, schoolId });
+    if (!user) throw new NotFoundError('User not found');
+    user.password = String(newPassword);
+    await user.save();
+    return { success: true };
   }
 }
