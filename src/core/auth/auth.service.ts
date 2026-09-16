@@ -1,178 +1,297 @@
+ // src/core/auth/auth.service.ts
+import mongoose from 'mongoose';
+import bcrypt from 'bcryptjs';
+import argon2 from 'argon2';
 import jwt from 'jsonwebtoken';
-import { randomBytes } from 'crypto';
 import { User } from '../../models/User';
 import { School } from '../../models/School';
-import { setSession, deleteSession, deleteAllUserSessions } from '../../config/mongoStore';
-import { env } from '../../config/env';
-import { UnauthorizedError } from '../../utils/errors';
+import { AuditLog } from '../../models/AuditLog';
+import config from '../../config/env';
 import logger from '../../config/logger';
+import { BadRequestError, NotFoundError } from '../../middleware/error.middleware';
 
+// ------------------------------------------------------------------
+// Config
+// ------------------------------------------------------------------
+const ACCESS_TOKEN_TTL = '15m';
+const REFRESH_TOKEN_TTL = '30d';
+const REFRESH_TTL_DAYS = 30;
+
+function accessSecret(): string {
+  return process.env.JWT_SECRET || (config as any).JWT_SECRET || 'change-me-in-env';
+}
+function refreshSecret(): string {
+  return process.env.JWT_REFRESH_SECRET
+    || (config as any).JWT_REFRESH_SECRET
+    || process.env.JWT_SECRET
+    || 'change-me-in-env';
+}
+
+// ------------------------------------------------------------------
+// Password helpers — support both hashers
+// ------------------------------------------------------------------
+
+/**
+ * Verify a plaintext password against a stored hash. Detects which
+ * hasher produced the hash by its prefix so old bcrypt accounts and
+ * new argon2 accounts both authenticate.
+ *
+ *   $2a$…, $2b$…, $2y$…  → bcrypt
+ *   $argon2…              → argon2
+ */
+async function verifyPassword(stored: string, candidate: string): Promise<boolean> {
+  if (!stored || !candidate) return false;
+  try {
+    if (stored.startsWith('$argon2')) {
+      return await argon2.verify(stored, candidate);
+    }
+    if (stored.startsWith('$2a$') || stored.startsWith('$2b$') || stored.startsWith('$2y$')) {
+      return await bcrypt.compare(candidate, stored);
+    }
+    // Unknown format — refuse rather than guess.
+    logger.warn('verifyPassword: unknown hash format encountered');
+    return false;
+  } catch (err: any) {
+    logger.warn(`verifyPassword: comparison threw (${err?.message})`);
+    return false;
+  }
+}
+
+/**
+ * True if the stored hash is bcrypt — used to re-hash on successful
+ * login so accounts migrate to argon2 without user action.
+ */
+function isLegacyHash(stored: string): boolean {
+  return stored.startsWith('$2a$') || stored.startsWith('$2b$') || stored.startsWith('$2y$');
+}
+
+// ------------------------------------------------------------------
+// Token helpers
+// ------------------------------------------------------------------
+function signAccessToken(user: any): string {
+  return jwt.sign(
+    {
+      sub: String(user._id),
+      role: user.role,
+      schoolId: user.schoolId ? String(user.schoolId) : undefined,
+      name: user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim(),
+    },
+    accessSecret(),
+    { expiresIn: ACCESS_TOKEN_TTL }
+  );
+}
+
+function signRefreshToken(user: any): string {
+  return jwt.sign(
+    { sub: String(user._id), type: 'refresh' },
+    refreshSecret(),
+    { expiresIn: REFRESH_TOKEN_TTL }
+  );
+}
+
+function computeRefreshExpiry(): Date {
+  return new Date(Date.now() + REFRESH_TTL_DAYS * 24 * 60 * 60 * 1000);
+}
+
+// ------------------------------------------------------------------
+// Service
+// ------------------------------------------------------------------
 export class AuthService {
-  static async login(username: string, password: string, ip?: string, userAgent?: string) {
-    const user = await User.findOne({ username }).select('+password');
+  /**
+   * Username + password login. Handles legacy bcrypt hashes,
+   * upgrades them to argon2 on success, and rotates refresh tokens.
+   */
+  static async login(username: string, password: string, meta: any = {}) {
+    if (!username || !password) {
+      throw new BadRequestError('Username and password are required');
+    }
+
+    const uname = String(username).toLowerCase().trim();
+
+    // select('+password') because the schema marks it select:false.
+    const user = await User.findOne({ username: uname }).select('+password');
     if (!user) {
-      throw new UnauthorizedError('Invalid credentials');
+      // Same error message for missing user and bad password — avoids
+      // leaking which usernames exist.
+      throw new BadRequestError('Invalid username or password');
     }
-
     if (!user.isActive) {
-      throw new UnauthorizedError('Account deactivated');
+      const err: any = new Error('This account has been deactivated. Contact your school owner.');
+      err.statusCode = 403;
+      throw err;
     }
 
-    const isPasswordValid = await user.comparePassword(password);
-    if (!isPasswordValid) {
-      throw new UnauthorizedError('Invalid credentials');
+    const ok = await verifyPassword(user.password, password);
+    if (!ok) {
+      throw new BadRequestError('Invalid username or password');
     }
 
-    let schoolId = user.schoolId?.toString();
-    if (user.schoolId) {
-      const school = await School.findById(user.schoolId);
-      if (!school || school.status !== 'ACTIVE') {
-        throw new UnauthorizedError('School is not active');
+    // Transparent migration: if we just verified a bcrypt hash, replace
+    // it with argon2 so future logins are faster and the storage format
+    // is uniform.
+    if (isLegacyHash(user.password)) {
+      try {
+        user.password = password;            // pre-save hook rehashes with argon2
+        await user.save();
+        logger.info(`Migrated bcrypt → argon2 hash for ${user.username}`);
+      } catch (err: any) {
+        // Migration failing shouldn't break login — the user already
+        // authenticated successfully.
+        logger.warn(`Failed to migrate password hash for ${user.username}: ${err?.message}`);
       }
-      schoolId = school._id.toString();
     }
 
-    const sessionId = randomBytes(16).toString('hex');
-    const accessToken = this.generateAccessToken(user._id.toString(), sessionId);
-    const refreshToken = this.generateRefreshToken(user._id.toString(), sessionId);
+    // Issue tokens.
+    const accessToken = signAccessToken(user);
+    const refreshToken = signRefreshToken(user);
 
-    const refreshHash = await this.hashToken(refreshToken);
-    user.refreshTokens.push(refreshHash);
-    if (user.refreshTokens.length > 10) {
-      user.refreshTokens = user.refreshTokens.slice(-5);
-    }
+    // Persist the refresh token (bounded to the last 5 active sessions).
+    user.refreshTokens = [refreshToken, ...(user.refreshTokens || []).slice(0, 4)];
     user.lastLogin = new Date();
+    user.lastLoginAt = new Date();
     await user.save();
 
-    await setSession(sessionId, {
-      userId: user._id.toString(),
-      schoolId,
-      ip,
-      userAgent,
-      createdAt: new Date().toISOString(),
-    }, 60 * 60 * 24 * 7);
-
-    logger.info(`User ${user.email} logged in (session ${sessionId})`);
+    // Audit — best-effort, ignore failures.
+    try {
+      await AuditLog.create({
+        actor: user.username,
+        action: 'auth.login',
+        resource: 'User',
+        resourceId: user._id,
+        after: { ip: meta.ip, ua: meta.userAgent },
+      });
+    } catch (_) {}
 
     return {
       accessToken,
       refreshToken,
       user: {
-        id: user._id,
-        email: user.email,
-        firstName: user.firstName,
-        lastName: user.lastName,
+        id: String(user._id),
+        name: user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim(),
+        username: user.username,
         role: user.role,
-        schoolId: user.schoolId,
+        schoolId: user.schoolId ? String(user.schoolId) : null,
+        formClassId: user.formClassId ? String(user.formClassId) : null,
+        subjectIds: (user.subjectIds || []).map((s) => String(s)),
+        parentId: user.parentId ? String(user.parentId) : null,
       },
     };
   }
 
-  static async refreshToken(refreshToken: string) {
-    let decoded: any;
+  /**
+   * Rotate a refresh token into a new access + refresh pair. Called by
+   * the frontend when a request returns 401.
+   */
+  static async refresh(refreshToken: string) {
+    if (!refreshToken) throw new BadRequestError('Refresh token required');
+
+    let payload: any;
     try {
-      decoded = jwt.verify(refreshToken, env.JWT_REFRESH_SECRET);
-    } catch (error) {
-      throw new UnauthorizedError('Invalid refresh token');
+      payload = jwt.verify(refreshToken, refreshSecret());
+    } catch (_) {
+      throw new BadRequestError('Invalid or expired refresh token');
+    }
+    if (payload.type !== 'refresh') {
+      throw new BadRequestError('Invalid token type');
     }
 
-    const user = await User.findById(decoded.userId);
+    const user = await User.findById(payload.sub).select('+password');
     if (!user || !user.isActive) {
-      throw new UnauthorizedError('User not found');
+      throw new BadRequestError('Account not found or inactive');
     }
 
-    const refreshHash = await this.hashToken(refreshToken);
-    if (!user.refreshTokens.includes(refreshHash)) {
-      // Possible token theft: revoke all sessions
-      await this.revokeTokenFamily(user._id.toString(), decoded.jti);
-      throw new UnauthorizedError('Refresh token reused, possible theft');
+    // Token must be one of the stored ones (prevents replay after logout).
+    if (!(user.refreshTokens || []).includes(refreshToken)) {
+      throw new BadRequestError('Refresh token revoked');
     }
 
-    // Remove old token, generate new ones
-    user.refreshTokens = user.refreshTokens.filter((t) => t !== refreshHash);
-    const sessionId = decoded.jti || randomBytes(16).toString('hex');
-    const newRefreshToken = this.generateRefreshToken(user._id.toString(), sessionId);
-    const newHash = await this.hashToken(newRefreshToken);
-    user.refreshTokens.push(newHash);
+    const newAccess = signAccessToken(user);
+    const newRefresh = signRefreshToken(user);
+
+    // Replace the old token with the new one (rotation).
+    user.refreshTokens = [
+      newRefresh,
+      ...(user.refreshTokens || []).filter((t) => t !== refreshToken).slice(0, 4),
+    ];
     await user.save();
 
-    const newAccessToken = this.generateAccessToken(user._id.toString(), sessionId);
-
-    // Update session TTL
-    const schoolId = user.schoolId?.toString();
-    await setSession(sessionId, {
-      userId: user._id.toString(),
-      schoolId,
-    }, 60 * 60 * 24 * 7);
-
     return {
-      accessToken: newAccessToken,
-      refreshToken: newRefreshToken,
+      accessToken: newAccess,
+      refreshToken: newRefresh,
+      user: {
+        id: String(user._id),
+        name: user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim(),
+        username: user.username,
+        role: user.role,
+        schoolId: user.schoolId ? String(user.schoolId) : null,
+        formClassId: user.formClassId ? String(user.formClassId) : null,
+        subjectIds: (user.subjectIds || []).map((s) => String(s)),
+        parentId: user.parentId ? String(user.parentId) : null,
+      },
     };
   }
 
-  static async logout(userId: string, refreshToken: string, accessToken: string) {
-    const user = await User.findById(userId);
-    if (!user) return;
-
-    const refreshHash = await this.hashToken(refreshToken);
-    user.refreshTokens = user.refreshTokens.filter((t) => t !== refreshHash);
-    await user.save();
-
-    // Deleting the session doc is sufficient revocation: authMiddleware's
-    // getSession lookup will fail for this token from now on, same effect
-    // the old Redis blacklist entry had (just without a separate TTL'd key).
+  /**
+   * Log out — remove the specific refresh token from the stored list.
+   * Idempotent: logging out with a token that isn't stored still
+   * returns success so the frontend never gets stuck.
+   */
+  static async logout(refreshToken: string) {
+    if (!refreshToken) return { success: true };
     try {
-      const decoded = jwt.verify(accessToken, env.JWT_ACCESS_SECRET) as any;
-      if (decoded.jti) {
-        await deleteSession(decoded.jti);
+      const payload: any = jwt.verify(refreshToken, refreshSecret());
+      const user = await User.findById(payload.sub);
+      if (user) {
+        user.refreshTokens = (user.refreshTokens || []).filter((t) => t !== refreshToken);
+        await user.save();
       }
-    } catch (e) {
-      // ignore
+    } catch (_) {
+      // Ignore — logged out is logged out.
     }
-
-    logger.info(`User ${user.email} logged out`);
+    return { success: true };
   }
 
+  /**
+   * Log out everywhere — clear every stored refresh token for this user.
+   */
   static async logoutAll(userId: string) {
+    if (!mongoose.isValidObjectId(userId)) {
+      throw new BadRequestError('Invalid user id');
+    }
     const user = await User.findById(userId);
-    if (!user) return;
+    if (!user) throw new NotFoundError('User not found');
     user.refreshTokens = [];
     await user.save();
-
-    await deleteAllUserSessions(userId);
-
-    logger.info(`User ${user.email} logged out from all devices`);
+    return { success: true };
   }
 
-  private static generateAccessToken(userId: string, sessionId: string): string {
-    return jwt.sign(
-      { userId, jti: sessionId },
-      env.JWT_ACCESS_SECRET,
-      { expiresIn: env.JWT_ACCESS_EXPIRY as any }
-    );
-  }
-
-  private static generateRefreshToken(userId: string, sessionId: string): string {
-    return jwt.sign(
-      { userId, jti: sessionId },
-      env.JWT_REFRESH_SECRET,
-      { expiresIn: env.JWT_REFRESH_EXPIRY as any }
-    );
-  }
-
-  private static async hashToken(token: string): Promise<string> {
-    const crypto = await import('crypto');
-    return crypto.createHash('sha256').update(token).digest('hex');
-  }
-
-  private static async revokeTokenFamily(userId: string, _sessionId: string): Promise<void> {
-    const user = await User.findById(userId);
-    if (user) {
-      user.refreshTokens = [];
-      await user.save();
+  /**
+   * Change own password — verifies the old one first.
+   */
+  static async changePassword(userId: string, oldPassword: string, newPassword: string) {
+    if (!newPassword || newPassword.length < 6) {
+      throw new BadRequestError('New password must be at least 6 characters');
     }
-    await deleteAllUserSessions(userId);
-    logger.warn(`Revoked all sessions for user ${userId} due to possible token theft`);
+    const user = await User.findById(userId).select('+password');
+    if (!user) throw new NotFoundError('User not found');
+
+    const ok = await verifyPassword(user.password, oldPassword);
+    if (!ok) throw new BadRequestError('Current password is incorrect');
+
+    user.password = newPassword;
+    user.refreshTokens = []; // end every other session
+    await user.save();
+
+    // Audit — best-effort.
+    try {
+      await AuditLog.create({
+        actor: user.username,
+        action: 'auth.password_changed',
+        resource: 'User',
+        resourceId: user._id,
+      });
+    } catch (_) {}
+
+    return { success: true };
   }
 }
