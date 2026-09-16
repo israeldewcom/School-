@@ -2,26 +2,21 @@
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import argon2 from 'argon2';
-import jwt from 'jsonwebtoken';
+import jwt, { SignOptions } from 'jsonwebtoken';
 import { User } from '../../models/User';
 import { AuditLog } from '../../models/AuditLog';
 import * as envConfig from '../../config/env';
 import logger from '../../config/logger';
 import { BadRequestError, NotFoundError } from '../../middleware/error.middleware';
 
-// Normalize the env module — supports both `export default {}` and named exports.
 const config: any = (envConfig as any).default || envConfig;
 
 const ACCESS_TOKEN_TTL = '15m';
 const REFRESH_TOKEN_TTL = '30d';
-const REFRESH_TTL_DAYS = 30;
+// REMOVED: REFRESH_TTL_DAYS — was declared but never used.
 
 function accessSecret(): string {
-  return (
-    process.env.JWT_SECRET ||
-    config.JWT_SECRET ||
-    'change-me-in-env'
-  );
+  return process.env.JWT_SECRET || config.JWT_SECRET || 'change-me-in-env';
 }
 
 function refreshSecret(): string {
@@ -35,7 +30,7 @@ function refreshSecret(): string {
 }
 
 // ------------------------------------------------------------------
-// Password verification — supports bcrypt and argon2
+// Password verification — bcrypt + argon2
 // ------------------------------------------------------------------
 async function verifyPassword(stored: string, candidate: string): Promise<boolean> {
   if (!stored || !candidate) return false;
@@ -43,11 +38,7 @@ async function verifyPassword(stored: string, candidate: string): Promise<boolea
     if (stored.startsWith('$argon2')) {
       return await argon2.verify(stored, candidate);
     }
-    if (
-      stored.startsWith('$2a$') ||
-      stored.startsWith('$2b$') ||
-      stored.startsWith('$2y$')
-    ) {
+    if (stored.startsWith('$2a$') || stored.startsWith('$2b$') || stored.startsWith('$2y$')) {
       return await bcrypt.compare(candidate, stored);
     }
     logger.warn('verifyPassword: unknown hash format encountered');
@@ -59,17 +50,20 @@ async function verifyPassword(stored: string, candidate: string): Promise<boolea
 }
 
 function isLegacyHash(stored: string): boolean {
-  return (
-    stored.startsWith('$2a$') ||
-    stored.startsWith('$2b$') ||
-    stored.startsWith('$2y$')
-  );
+  return stored.startsWith('$2a$') || stored.startsWith('$2b$') || stored.startsWith('$2y$');
 }
 
 // ------------------------------------------------------------------
 // Token helpers
+//
+// The `expiresIn` option trips the @types/jsonwebtoken overload
+// resolution because the accepted type is `number | StringValue`.
+// A plain `string` doesn't match — casting the options object as
+// `SignOptions` clears the error without losing type safety on the
+// rest of the object.
 // ------------------------------------------------------------------
 function signAccessToken(user: any): string {
+  const options: SignOptions = { expiresIn: ACCESS_TOKEN_TTL as any };
   return jwt.sign(
     {
       sub: String(user._id),
@@ -78,15 +72,18 @@ function signAccessToken(user: any): string {
       name: user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim(),
     },
     accessSecret(),
-    { expiresIn: ACCESS_TOKEN_TTL }
+    options
   );
 }
 
 function signRefreshToken(user: any, ttlOverride?: string): string {
+  const options: SignOptions = {
+    expiresIn: (ttlOverride || REFRESH_TOKEN_TTL) as any,
+  };
   return jwt.sign(
     { sub: String(user._id), type: 'refresh' },
     refreshSecret(),
-    { expiresIn: ttlOverride || REFRESH_TOKEN_TTL }
+    options
   );
 }
 
@@ -107,16 +104,6 @@ function serializeUser(user: any) {
 // Service
 // ------------------------------------------------------------------
 export class AuthService {
-  /**
-   * Login. Flexible signature:
-   *   login(username, password)
-   *   login(username, password, { ip, userAgent })
-   *   login(username, password, ipString, userAgentString)
-   *   login(username, password, meta, remember)
-   *
-   * The 4-argument form is what school.controller.ts uses when it
-   * auto-logs a new owner in after onboarding.
-   */
   static async login(
     username: string,
     password: string,
@@ -127,15 +114,12 @@ export class AuthService {
       throw new BadRequestError('Username and password are required');
     }
 
-    // Normalize the trailing args into { meta, remember }.
     let meta: any = {};
     let remember = true;
 
     if (typeof metaOrIp === 'string') {
-      // (username, password, ip, userAgent)
       meta = { ip: metaOrIp, userAgent: maybeUserAgentOrRemember };
     } else if (metaOrIp && typeof metaOrIp === 'object') {
-      // (username, password, metaObject)
       meta = metaOrIp;
       if (typeof maybeUserAgentOrRemember === 'boolean') {
         remember = maybeUserAgentOrRemember;
@@ -154,7 +138,6 @@ export class AuthService {
     const ok = await verifyPassword(user.password, password);
     if (!ok) throw new BadRequestError('Invalid username or password');
 
-    // Transparent migration of bcrypt → argon2.
     if (isLegacyHash(user.password)) {
       try {
         user.password = password;
@@ -192,10 +175,6 @@ export class AuthService {
     };
   }
 
-  /**
-   * Rotate a refresh token. Named `refresh` internally; aliased below
-   * as `refreshToken` so callers using either name compile.
-   */
   static async refresh(refreshToken: string) {
     if (!refreshToken) throw new BadRequestError('Refresh token required');
 
@@ -213,7 +192,6 @@ export class AuthService {
     if (!user || !user.isActive) {
       throw new BadRequestError('Account not found or inactive');
     }
-
     if (!(user.refreshTokens || []).includes(refreshToken)) {
       throw new BadRequestError('Refresh token revoked');
     }
@@ -234,9 +212,6 @@ export class AuthService {
     };
   }
 
-  /**
-   * Alias — some controllers reference `refreshToken` instead of `refresh`.
-   */
   static async refreshToken(refreshToken: string) {
     return AuthService.refresh(refreshToken);
   }
