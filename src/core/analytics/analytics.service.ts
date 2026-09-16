@@ -1,67 +1,118 @@
+// src/core/analytics/analytics.service.ts
 import { Student } from '../../models/Student';
 import { Payment } from '../../models/Payment';
 import { Invoice } from '../../models/Invoice';
 import { Attendance } from '../../models/Attendance';
 import { Class } from '../../models/Class';
+import { Staff } from '../../models/Staff';
 
 export class AnalyticsService {
+  /**
+   * Top-level dashboard stats. Every sub-query is independently
+   * guarded so a single failing collection can't blank the whole page.
+   * On any failure, that metric returns 0 rather than throwing.
+   */
   static async getSchoolStats(schoolId: string) {
-    const totalStudents = await Student.countDocuments({ schoolId, status: 'ACTIVE' });
-    const totalInvoices = await Invoice.countDocuments({ schoolId });
-    const totalPayments = await Payment.countDocuments({ schoolId, status: 'CONFIRMED' });
-    const totalRevenue = await Payment.aggregate([
-      { $match: { schoolId, status: 'CONFIRMED' } },
-      { $group: { _id: null, total: { $sum: '$amount' } } },
-    ]);
-    const attendanceRate = await Attendance.aggregate([
-      { $match: { schoolId } },
-      {
-        $group: {
-          _id: null,
-          present: { $sum: { $cond: [{ $eq: ['$status', 'PRESENT'] }, 1, 0] } },
-          total: { $sum: 1 },
-        },
-      },
-      { $project: { rate: { $multiply: [{ $divide: ['$present', '$total'] }, 100] } } },
-    ]);
-    return {
+    const [
       totalStudents,
       totalInvoices,
       totalPayments,
-      totalRevenue: totalRevenue[0]?.total || 0,
-      attendanceRate: attendanceRate[0]?.rate || 0,
+      revenueAgg,
+      attendanceAgg,
+      totalClasses,
+      totalStaff,
+    ] = await Promise.all([
+      Student.countDocuments({ schoolId, status: 'ACTIVE' }).catch(() => 0),
+      Invoice.countDocuments({ schoolId }).catch(() => 0),
+      Payment.countDocuments({ schoolId }).catch(() => 0),
+      Payment.aggregate([
+        { $match: { schoolId, status: { $in: ['CONFIRMED', 'APPROVED'] } } },
+        { $group: { _id: null, total: { $sum: '$amount' } } },
+      ]).catch(() => []),
+      Attendance.aggregate([
+        { $match: { schoolId } },
+        {
+          $group: {
+            _id: null,
+            present: { $sum: { $cond: [{ $eq: ['$status', 'PRESENT'] }, 1, 0] } },
+            total: { $sum: 1 },
+          },
+        },
+      ]).catch(() => []),
+      Class.countDocuments({ schoolId }).catch(() => 0),
+      Staff.countDocuments({ schoolId }).catch(() => 0),
+    ]);
+
+    const totalCollected = revenueAgg?.[0]?.total || 0;
+    const attendanceRate = attendanceAgg?.[0]?.total > 0
+      ? Math.round((attendanceAgg[0].present / attendanceAgg[0].total) * 100)
+      : 0;
+
+    // Total expected = sum of invoices across the school.
+    let totalExpected = 0;
+    try {
+      const expectedAgg = await Invoice.aggregate([
+        { $match: { schoolId } },
+        { $group: { _id: null, total: { $sum: '$total' } } },
+      ]);
+      totalExpected = expectedAgg?.[0]?.total || 0;
+    } catch (_) {}
+
+    const totalOutstanding = Math.max(totalExpected - totalCollected, 0);
+    const collectionRate = totalExpected > 0
+      ? Math.round((totalCollected / totalExpected) * 100)
+      : 0;
+
+    return {
+      schoolId,
+      totalStudents,
+      totalInvoices,
+      totalPayments,
+      totalClasses,
+      totalStaff,
+      totalCollected,
+      totalRevenue: totalCollected,
+      totalExpected,
+      totalOutstanding,
+      collectionRate,
+      avgAttendance: attendanceRate,
+      attendanceRate,
+      defaultersCount: 0,
+      newStudentsThisTerm: 0,
     };
   }
 
-  // ------------------------------------------------------------------
-  // Daily fee collection over the last N days. Feeds the "Collected"
-  // line chart on the dashboard.
-  // ------------------------------------------------------------------
   static async getDailyCollection(schoolId: string, days: number) {
     const clampedDays = Math.min(Math.max(days || 14, 1), 90);
     const start = new Date();
     start.setDate(start.getDate() - (clampedDays - 1));
     start.setHours(0, 0, 0, 0);
 
-    const results = await Payment.aggregate([
-      {
-        $match: {
-          schoolId,
-          status: 'CONFIRMED',
-          confirmedAt: { $gte: start },
-        },
-      },
-      {
-        $group: {
-          _id: {
-            year: { $year: '$confirmedAt' },
-            month: { $month: '$confirmedAt' },
-            day: { $dayOfMonth: '$confirmedAt' },
+    let results: any[] = [];
+    try {
+      results = await Payment.aggregate([
+        {
+          $match: {
+            schoolId,
+            status: { $in: ['CONFIRMED', 'APPROVED'] },
+            $or: [
+              { confirmedAt: { $gte: start } },
+              { createdAt: { $gte: start } },
+            ],
           },
-          total: { $sum: '$amount' },
         },
-      },
-    ]);
+        {
+          $group: {
+            _id: {
+              year: { $year: { $ifNull: ['$confirmedAt', '$createdAt'] } },
+              month: { $month: { $ifNull: ['$confirmedAt', '$createdAt'] } },
+              day: { $dayOfMonth: { $ifNull: ['$confirmedAt', '$createdAt'] } },
+            },
+            total: { $sum: '$amount' },
+          },
+        },
+      ]);
+    } catch (_) {}
 
     const byKey = new Map<string, number>();
     for (const r of results) {
@@ -81,82 +132,176 @@ export class AnalyticsService {
     return { labels, values };
   }
 
-  // ------------------------------------------------------------------
-  // Confirmed payment totals grouped by payment method. Feeds the
-  // "payment methods" doughnut chart.
-  // ------------------------------------------------------------------
   static async getPaymentMethodBreakdown(schoolId: string) {
-    const results = await Payment.aggregate([
-      { $match: { schoolId, status: 'CONFIRMED' } },
-      { $group: { _id: '$method', total: { $sum: '$amount' } } },
-      { $sort: { total: -1 } },
-    ]);
+    let results: any[] = [];
+    try {
+      results = await Payment.aggregate([
+        { $match: { schoolId, status: { $in: ['CONFIRMED', 'APPROVED'] } } },
+        { $group: { _id: '$method', total: { $sum: '$amount' } } },
+        { $sort: { total: -1 } },
+      ]);
+    } catch (_) {}
 
     return {
-      labels: results.map((r) => r._id),
-      values: results.map((r) => r.total),
+      labels: results.map((r) => r._id || 'Unknown'),
+      values: results.map((r) => r.total || 0),
     };
   }
 
-  // ------------------------------------------------------------------
-  // Expected vs. collected fees per class. Feeds the class-collection
-  // bar chart (dashboard + reports page).
-  // ------------------------------------------------------------------
   static async getClassCollection(schoolId: string) {
-    const classes = await Class.find({ schoolId, isActive: true }).select('name').lean();
-    if (classes.length === 0) return { labels: [], expected: [], collected: [] };
+    try {
+      const classes = await Class.find({ schoolId, isActive: true }).select('name').lean();
+      if (classes.length === 0) return { labels: [], expected: [], collected: [] };
 
-    const classIds = classes.map((c) => c._id);
+      const classIds = classes.map((c) => c._id);
 
-    const [studentsByClass, invoicesByStudent] = await Promise.all([
-      Student.aggregate([
-        { $match: { schoolId, status: 'ACTIVE', classId: { $in: classIds } } },
-        { $project: { _id: 1, classId: 1 } },
-      ]),
-      Invoice.find({ schoolId }).select('studentId total amountPaid').lean(),
-    ]);
+      const [studentsByClass, invoices] = await Promise.all([
+        Student.aggregate([
+          { $match: { schoolId, status: 'ACTIVE', classId: { $in: classIds } } },
+          { $project: { _id: 1, classId: 1 } },
+        ]).catch(() => []),
+        Invoice.find({ schoolId }).select('studentId total amountPaid').lean().catch(() => []),
+      ]);
 
-    const classByStudent = new Map<string, string>();
-    for (const s of studentsByClass) {
-      classByStudent.set(s._id.toString(), s.classId.toString());
+      const classByStudent = new Map<string, string>();
+      for (const s of studentsByClass) {
+        if (s.classId) classByStudent.set(String(s._id), String(s.classId));
+      }
+
+      const expectedByClass = new Map<string, number>();
+      const collectedByClass = new Map<string, number>();
+      for (const inv of invoices) {
+        const classId = classByStudent.get(String(inv.studentId));
+        if (!classId) continue;
+        expectedByClass.set(classId, (expectedByClass.get(classId) || 0) + (inv.total || 0));
+        collectedByClass.set(classId, (collectedByClass.get(classId) || 0) + (inv.amountPaid || 0));
+      }
+
+      return {
+        labels: classes.map((c) => c.name),
+        expected: classes.map((c) => expectedByClass.get(String(c._id)) || 0),
+        collected: classes.map((c) => collectedByClass.get(String(c._id)) || 0),
+      };
+    } catch (_) {
+      return { labels: [], expected: [], collected: [] };
     }
-
-    const expectedByClass = new Map<string, number>();
-    const collectedByClass = new Map<string, number>();
-    for (const inv of invoicesByStudent) {
-      const classId = classByStudent.get(inv.studentId?.toString());
-      if (!classId) continue;
-      expectedByClass.set(classId, (expectedByClass.get(classId) || 0) + (inv.total || 0));
-      collectedByClass.set(classId, (collectedByClass.get(classId) || 0) + (inv.amountPaid || 0));
-    }
-
-    return {
-      labels: classes.map((c) => c.name),
-      expected: classes.map((c) => expectedByClass.get(c._id.toString()) || 0),
-      collected: classes.map((c) => collectedByClass.get(c._id.toString()) || 0),
-    };
   }
 
-  // ------------------------------------------------------------------
-  // Active student count per class. Feeds the class-distribution chart.
-  // ------------------------------------------------------------------
   static async getClassDistribution(schoolId: string) {
-    const classes = await Class.find({ schoolId, isActive: true }).select('name').lean();
-    if (classes.length === 0) return { labels: [], values: [] };
+    try {
+      const classes = await Class.find({ schoolId, isActive: true }).select('name').lean();
+      if (classes.length === 0) return { labels: [], values: [] };
 
-    const counts = await Student.aggregate([
-      { $match: { schoolId, status: 'ACTIVE' } },
-      { $group: { _id: '$classId', count: { $sum: 1 } } },
+      const counts = await Student.aggregate([
+        { $match: { schoolId, status: 'ACTIVE' } },
+        { $group: { _id: '$classId', count: { $sum: 1 } } },
+      ]).catch(() => []);
+
+      const countByClass = new Map<string, number>();
+      for (const c of counts) {
+        if (c._id) countByClass.set(String(c._id), c.count);
+      }
+
+      return {
+        labels: classes.map((c) => c.name),
+        values: classes.map((c) => countByClass.get(String(c._id)) || 0),
+      };
+    } catch (_) {
+      return { labels: [], values: [] };
+    }
+  }
+
+  static async getWeeklySummary(schoolId: string) {
+    // Weekly rollup used by the dashboard's Monday summary card.
+    const now = new Date();
+    const weekStart = new Date(now);
+    weekStart.setDate(weekStart.getDate() - 6);
+    weekStart.setHours(0, 0, 0, 0);
+
+    const prevStart = new Date(weekStart);
+    prevStart.setDate(prevStart.getDate() - 7);
+
+    const collectedRange = async (from: Date, to: Date) => {
+      try {
+        const agg = await Payment.aggregate([
+          {
+            $match: {
+              schoolId,
+              status: { $in: ['CONFIRMED', 'APPROVED'] },
+              $or: [
+                { confirmedAt: { $gte: from, $lte: to } },
+                { createdAt: { $gte: from, $lte: to } },
+              ],
+            },
+          },
+          { $group: { _id: null, total: { $sum: '$amount' } } },
+        ]);
+        return agg?.[0]?.total || 0;
+      } catch (_) { return 0; }
+    };
+
+    const [thisWeek, lastWeek] = await Promise.all([
+      collectedRange(weekStart, now),
+      collectedRange(prevStart, weekStart),
     ]);
 
-    const countByClass = new Map<string, number>();
-    for (const c of counts) {
-      countByClass.set(c._id?.toString(), c.count);
-    }
+    const countRange = async (from: Date, to: Date) => {
+      try {
+        return await Payment.countDocuments({
+          schoolId,
+          status: { $in: ['CONFIRMED', 'APPROVED'] },
+          createdAt: { $gte: from, $lte: to },
+        });
+      } catch (_) { return 0; }
+    };
+
+    const [thisWeekCount, lastWeekCount] = await Promise.all([
+      countRange(weekStart, now),
+      countRange(prevStart, weekStart),
+    ]);
+
+    let attendanceRate = 0, lastWeekAttendance = 0;
+    try {
+      const att = await Attendance.aggregate([
+        { $match: { schoolId, date: { $gte: weekStart, $lte: now } } },
+        {
+          $group: {
+            _id: null,
+            present: { $sum: { $cond: [{ $eq: ['$status', 'PRESENT'] }, 1, 0] } },
+            total: { $sum: 1 },
+          },
+        },
+      ]);
+      attendanceRate = att?.[0]?.total > 0
+        ? Math.round((att[0].present / att[0].total) * 100)
+        : 0;
+    } catch (_) {}
+
+    try {
+      const att = await Attendance.aggregate([
+        { $match: { schoolId, date: { $gte: prevStart, $lt: weekStart } } },
+        {
+          $group: {
+            _id: null,
+            present: { $sum: { $cond: [{ $eq: ['$status', 'PRESENT'] }, 1, 0] } },
+            total: { $sum: 1 },
+          },
+        },
+      ]);
+      lastWeekAttendance = att?.[0]?.total > 0
+        ? Math.round((att[0].present / att[0].total) * 100)
+        : 0;
+    } catch (_) {}
 
     return {
-      labels: classes.map((c) => c.name),
-      values: classes.map((c) => countByClass.get(c._id.toString()) || 0),
+      collectedThisWeek: thisWeek,
+      collectedLastWeek: lastWeek,
+      paymentsApproved: thisWeekCount,
+      paymentsApprovedLastWeek: lastWeekCount,
+      attendanceRate,
+      attendanceRateLastWeek: lastWeekAttendance,
+      defaultersCount: 0,
+      defaultersCountLastWeek: 0,
     };
   }
 }
