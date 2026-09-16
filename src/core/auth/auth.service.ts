@@ -1,4 +1,4 @@
- // src/core/auth/auth.service.ts
+// src/core/auth/auth.service.ts
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import argon2 from 'argon2';
@@ -11,9 +11,26 @@ import { BadRequestError, NotFoundError } from '../../middleware/error.middlewar
 
 const config: any = (envConfig as any).default || envConfig;
 
+// ------------------------------------------------------------------
+// Session configuration
+//
+// ACCESS_TOKEN_TTL  — short-lived, sent on every request. When it
+//                     expires, the frontend silently refreshes using
+//                     the refresh token. Users never see this.
+//
+// REFRESH_TOKEN_TTL — long-lived. Determines how long a user can go
+//                     without opening the app before being forced to
+//                     log in again.
+//
+// ABSOLUTE_SESSION_DAYS — hard cap. Set to 0 to disable. When enabled,
+//                     every user must re-login N days after their
+//                     session began, regardless of activity. Useful
+//                     for compliance; causes Monday-morning chaos if
+//                     you're not careful.
+// ------------------------------------------------------------------
 const ACCESS_TOKEN_TTL = '15m';
-const REFRESH_TOKEN_TTL = '30d';
-// REMOVED: REFRESH_TTL_DAYS — was declared but never used.
+const REFRESH_TOKEN_TTL = '90d';   // was 30d
+const ABSOLUTE_SESSION_DAYS = 0;   // 0 = disabled. Set to 90 for hard cap.
 
 function accessSecret(): string {
   return process.env.JWT_SECRET || config.JWT_SECRET || 'change-me-in-env';
@@ -30,7 +47,8 @@ function refreshSecret(): string {
 }
 
 // ------------------------------------------------------------------
-// Password verification — bcrypt + argon2
+// Password verification — supports both legacy bcrypt hashes and
+// current argon2 hashes so old accounts log in without a reset.
 // ------------------------------------------------------------------
 async function verifyPassword(stored: string, candidate: string): Promise<boolean> {
   if (!stored || !candidate) return false;
@@ -56,10 +74,9 @@ function isLegacyHash(stored: string): boolean {
 // ------------------------------------------------------------------
 // Token helpers
 //
-// The `expiresIn` option trips the @types/jsonwebtoken overload
-// resolution because the accepted type is `number | StringValue`.
-// A plain `string` doesn't match — casting the options object as
-// `SignOptions` clears the error without losing type safety on the
+// The `expiresIn` option trips @types/jsonwebtoken overload resolution
+// because it wants `number | StringValue`, not plain `string`. Casting
+// via SignOptions clears the type error without losing safety on the
 // rest of the object.
 // ------------------------------------------------------------------
 function signAccessToken(user: any): string {
@@ -97,6 +114,7 @@ function serializeUser(user: any) {
     formClassId: user.formClassId ? String(user.formClassId) : null,
     subjectIds: (user.subjectIds || []).map((s: any) => String(s)),
     parentId: user.parentId ? String(user.parentId) : null,
+    sessionStartedAt: user.sessionStartedAt ? user.sessionStartedAt.toISOString() : null,
   };
 }
 
@@ -104,6 +122,15 @@ function serializeUser(user: any) {
 // Service
 // ------------------------------------------------------------------
 export class AuthService {
+  /**
+   * Login. Flexible signature so onboarding controllers can pass
+   * either a meta object or raw ip + userAgent strings.
+   *
+   *   login(username, password)
+   *   login(username, password, metaObject)
+   *   login(username, password, ipString, userAgentString)
+   *   login(username, password, metaObject, rememberMe)
+   */
   static async login(
     username: string,
     password: string,
@@ -114,6 +141,7 @@ export class AuthService {
       throw new BadRequestError('Username and password are required');
     }
 
+    // Normalize the trailing args.
     let meta: any = {};
     let remember = true;
 
@@ -138,6 +166,8 @@ export class AuthService {
     const ok = await verifyPassword(user.password, password);
     if (!ok) throw new BadRequestError('Invalid username or password');
 
+    // Transparent migration: if we just verified a bcrypt hash, replace
+    // it with argon2 so future logins use the newer format.
     if (isLegacyHash(user.password)) {
       try {
         user.password = password;
@@ -149,11 +179,18 @@ export class AuthService {
     }
 
     const accessToken = signAccessToken(user);
+    // "Remember me" off → short-lived 8-hour refresh. On → full 90 days.
     const refreshToken = remember
       ? signRefreshToken(user)
       : signRefreshToken(user, '8h');
 
+    // Keep only the 5 most recent refresh tokens per user. Prevents the
+    // array from growing forever across logins.
     user.refreshTokens = [refreshToken, ...(user.refreshTokens || []).slice(0, 4)];
+
+    // Stamp the session start on every login so the absolute cap (when
+    // enabled) has a reference point.
+    user.sessionStartedAt = new Date();
     user.lastLogin = new Date();
     user.lastLoginAt = new Date();
     await user.save();
@@ -175,6 +212,11 @@ export class AuthService {
     };
   }
 
+  /**
+   * Rotate a refresh token into a new access + refresh pair.
+   * Called silently by the frontend when the 15-minute access token
+   * expires. Users never see this unless it fails.
+   */
   static async refresh(refreshToken: string) {
     if (!refreshToken) throw new BadRequestError('Refresh token required');
 
@@ -192,13 +234,31 @@ export class AuthService {
     if (!user || !user.isActive) {
       throw new BadRequestError('Account not found or inactive');
     }
+
+    // Token must be one of the stored ones — protects against replay
+    // after logout.
     if (!(user.refreshTokens || []).includes(refreshToken)) {
       throw new BadRequestError('Refresh token revoked');
+    }
+
+    // Absolute session cap — only enforced when ABSOLUTE_SESSION_DAYS > 0.
+    // Forces re-login N days after the session began, regardless of how
+    // active the user has been.
+    if (ABSOLUTE_SESSION_DAYS > 0 && user.sessionStartedAt) {
+      const daysSinceStart =
+        (Date.now() - user.sessionStartedAt.getTime()) / 86400000;
+      if (daysSinceStart > ABSOLUTE_SESSION_DAYS) {
+        user.refreshTokens = [];
+        user.sessionStartedAt = undefined;
+        await user.save();
+        throw new BadRequestError('Session expired. Please sign in again.');
+      }
     }
 
     const newAccess = signAccessToken(user);
     const newRefresh = signRefreshToken(user);
 
+    // Replace the used token with the new one (rotation).
     user.refreshTokens = [
       newRefresh,
       ...(user.refreshTokens || []).filter((t) => t !== refreshToken).slice(0, 4),
@@ -212,6 +272,9 @@ export class AuthService {
     };
   }
 
+  /**
+   * Alias — some controllers reference `refreshToken` instead of `refresh`.
+   */
   static async refreshToken(refreshToken: string) {
     return AuthService.refresh(refreshToken);
   }
@@ -223,6 +286,11 @@ export class AuthService {
       const user = await User.findById(payload.sub);
       if (user) {
         user.refreshTokens = (user.refreshTokens || []).filter((t) => t !== refreshToken);
+        // When no tokens remain, this session is over — clear the start
+        // marker so the next login gets a fresh 90-day window.
+        if (user.refreshTokens.length === 0) {
+          user.sessionStartedAt = undefined;
+        }
         await user.save();
       }
     } catch (_) {}
@@ -236,6 +304,7 @@ export class AuthService {
     const user = await User.findById(userId);
     if (!user) throw new NotFoundError('User not found');
     user.refreshTokens = [];
+    user.sessionStartedAt = undefined;
     await user.save();
     return { success: true };
   }
@@ -251,7 +320,9 @@ export class AuthService {
     if (!ok) throw new BadRequestError('Current password is incorrect');
 
     user.password = newPassword;
+    // Password change ends every existing session on every device.
     user.refreshTokens = [];
+    user.sessionStartedAt = undefined;
     await user.save();
 
     try {
@@ -264,5 +335,23 @@ export class AuthService {
     } catch (_) {}
 
     return { success: true };
+  }
+
+  /**
+   * Return how long the current session has left. Frontend uses this
+   * to show a warning banner when expiry is close.
+   */
+  static async sessionStatus(userId: string) {
+    if (!mongoose.isValidObjectId(userId)) {
+      throw new BadRequestError('Invalid user id');
+    }
+    const user = await User.findById(userId).select('sessionStartedAt refreshTokens').lean();
+    if (!user) throw new NotFoundError('User not found');
+    return {
+      active: (user.refreshTokens || []).length > 0,
+      startedAt: (user as any).sessionStartedAt || null,
+      absoluteCapDays: ABSOLUTE_SESSION_DAYS,
+      slidingWindowDays: 90,
+    };
   }
 }
