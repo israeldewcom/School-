@@ -1,41 +1,22 @@
 // src/middleware/permission.middleware.ts
 import { Request, Response, NextFunction } from 'express';
 
-/**
- * Permission matrix. Each resource maps to actions, and each action
- * maps to the roles permitted.
- *
- * Enforcement happens in two layers:
- *   1. Route-level — requirePermission('payments','approve') blocks
- *      anyone whose role isn't on the list.
- *   2. Data-level — getUserScope() narrows what a permitted user
- *      actually sees (form teacher sees one class, parent sees one
- *      child, etc.). See scope.middleware.ts.
- */
 export const PERMISSION_ROLES: Record<string, Record<string, string[]>> = {
-  // ---- Platform (super admin only) ----
   platform: {
     access: ['SUPER_ADMIN'],
   },
-
-  // ---- User & credential management ----
   users: {
     read:  ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN'],
     write: ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN'],
   },
-
-  // ---- Academic setup ----
   academics: {
     read:  ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'FORM_TEACHER', 'SUBJECT_TEACHER', 'BURSAR'],
     write: ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER'],
   },
-
   classes: {
     read:  ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'FORM_TEACHER', 'SUBJECT_TEACHER', 'BURSAR'],
     write: ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN'],
   },
-
-  // ---- People ----
   students: {
     read:  ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'FORM_TEACHER', 'SUBJECT_TEACHER', 'BURSAR', 'PARENT'],
     write: ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN'],
@@ -48,8 +29,6 @@ export const PERMISSION_ROLES: Record<string, Record<string, string[]>> = {
     read:  ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER'],
     write: ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN'],
   },
-
-  // ---- Finance ----
   payments: {
     read:    ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'BURSAR', 'PARENT'],
     write:   ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'BURSAR'],
@@ -63,8 +42,6 @@ export const PERMISSION_ROLES: Record<string, Record<string, string[]>> = {
     read:  ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'BURSAR', 'PARENT'],
     write: ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'BURSAR'],
   },
-
-  // ---- Academics (day to day) ----
   attendance: {
     read:   ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'FORM_TEACHER', 'SUBJECT_TEACHER', 'PARENT'],
     write:  ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'FORM_TEACHER', 'SUBJECT_TEACHER'],
@@ -82,14 +59,10 @@ export const PERMISSION_ROLES: Record<string, Record<string, string[]>> = {
     read:  ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'FORM_TEACHER', 'SUBJECT_TEACHER', 'PARENT'],
     write: ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'FORM_TEACHER'],
   },
-
-  // ---- Comms ----
   communications: {
     read:  ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'BURSAR'],
     write: ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'BURSAR'],
   },
-
-  // ---- System ----
   analytics: {
     read: ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'BURSAR'],
   },
@@ -105,36 +78,43 @@ export const PERMISSION_ROLES: Record<string, Record<string, string[]>> = {
 
 /**
  * Route guard. Denies by default when the resource/action isn't listed.
+ * Every branch terminates with either `next()` or `return;` — never a
+ * `return res.json(...)` — so TypeScript's "not all paths return" check
+ * is satisfied.
  */
 export function requirePermission(resource: string, action: string) {
-  return (req: Request, res: Response, next: NextFunction) => {
+  return (req: Request, res: Response, next: NextFunction): void => {
     const role = (req as any).userRole || (req as any).user?.role;
     if (!role) {
-      return res.status(401).json({ success: false, message: 'Not authenticated' });
+      res.status(401).json({ success: false, message: 'Not authenticated' });
+      return;
     }
 
     // Super admin bypasses everything.
-    if (role === 'SUPER_ADMIN') return next();
+    if (role === 'SUPER_ADMIN') {
+      next();
+      return;
+    }
 
     const allowed = PERMISSION_ROLES[resource]?.[action] || [];
     if (!allowed.includes(role)) {
-      return res.status(403).json({
+      res.status(403).json({
         success: false,
         message: `Your role (${role}) does not have permission to perform this action.`,
       });
+      return;
     }
+
     next();
   };
 }
 
-/**
- * Convenience guard for endpoints only the platform admin should hit.
- */
 export function requireSuperAdmin() {
-  return (req: Request, res: Response, next: NextFunction) => {
+  return (req: Request, res: Response, next: NextFunction): void => {
     const role = (req as any).userRole || (req as any).user?.role;
     if (role !== 'SUPER_ADMIN') {
-      return res.status(403).json({ success: false, message: 'Super admin access required' });
+      res.status(403).json({ success: false, message: 'Super admin access required' });
+      return;
     }
     next();
   };
