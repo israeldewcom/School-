@@ -23,11 +23,6 @@ export const automationQueue = new Queue('automations', baseOptions);
 export const expiryQueue = new Queue('expiry', baseOptions);
 export const reconciliationQueue = new Queue('reconciliation', baseOptions);
 
-/**
- * Wraps Queue.add so a Redis outage returns null instead of throwing.
- * Callers can check the return value: null means "queued in memory
- * but not persisted" — never treat null as success.
- */
 export async function safeQueueAdd(
   queue: Queue,
   name: string,
@@ -46,9 +41,6 @@ export async function safeQueueAdd(
   }
 }
 
-/**
- * Get queue status for the Queue Status page.
- */
 export async function getAllQueueStatus() {
   const queues = [
     { name: 'sms', q: smsQueue },
@@ -75,26 +67,37 @@ export async function getAllQueueStatus() {
       results.push({
         name,
         count: waiting + active,
-        waiting,
-        active,
-        completed,
-        failed,
+        waiting, active, completed, failed,
         progress: completed > 0 ? Math.round((completed / (completed + failed)) * 100) : 0,
         isPaused: paused,
       });
     } catch (err: any) {
       results.push({
-        name,
-        count: 0,
-        waiting: 0,
-        active: 0,
-        completed: 0,
-        failed: 0,
-        progress: 0,
-        isPaused: true,
-        error: err?.message,
+        name, count: 0, waiting: 0, active: 0, completed: 0,
+        failed: 0, progress: 0, isPaused: true, error: err?.message,
       });
     }
   }
   return results;
+}
+
+/**
+ * Close every queue cleanly. Called by server.ts on SIGTERM/SIGINT.
+ * Best-effort: any failure is logged and ignored so shutdown proceeds.
+ */
+export async function closeAllQueues(): Promise<void> {
+  const queues = [
+    smsQueue, emailQueue, notificationQueue, pdfQueue, reportQueue,
+    paymentQueue, automationQueue, expiryQueue, reconciliationQueue,
+  ];
+  await Promise.all(
+    queues.map(async (q) => {
+      try {
+        await q.close();
+      } catch (err: any) {
+        logger.warn(`Failed to close queue ${q.name}: ${err?.message}`);
+      }
+    })
+  );
+  logger.info('All queues closed');
 }
