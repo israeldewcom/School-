@@ -4,51 +4,52 @@ import bcrypt from 'bcryptjs';
 import argon2 from 'argon2';
 import jwt from 'jsonwebtoken';
 import { User } from '../../models/User';
-import { School } from '../../models/School';
 import { AuditLog } from '../../models/AuditLog';
-import config from '../../config/env';
+import * as envConfig from '../../config/env';
 import logger from '../../config/logger';
 import { BadRequestError, NotFoundError } from '../../middleware/error.middleware';
 
-// ------------------------------------------------------------------
-// Config
-// ------------------------------------------------------------------
+// Normalize the env module — supports both `export default {}` and named exports.
+const config: any = (envConfig as any).default || envConfig;
+
 const ACCESS_TOKEN_TTL = '15m';
 const REFRESH_TOKEN_TTL = '30d';
 const REFRESH_TTL_DAYS = 30;
 
 function accessSecret(): string {
-  return process.env.JWT_SECRET || (config as any).JWT_SECRET || 'change-me-in-env';
+  return (
+    process.env.JWT_SECRET ||
+    config.JWT_SECRET ||
+    'change-me-in-env'
+  );
 }
+
 function refreshSecret(): string {
-  return process.env.JWT_REFRESH_SECRET
-    || (config as any).JWT_REFRESH_SECRET
-    || process.env.JWT_SECRET
-    || 'change-me-in-env';
+  return (
+    process.env.JWT_REFRESH_SECRET ||
+    config.JWT_REFRESH_SECRET ||
+    process.env.JWT_SECRET ||
+    config.JWT_SECRET ||
+    'change-me-in-env'
+  );
 }
 
 // ------------------------------------------------------------------
-// Password helpers — support both hashers
+// Password verification — supports bcrypt and argon2
 // ------------------------------------------------------------------
-
-/**
- * Verify a plaintext password against a stored hash. Detects which
- * hasher produced the hash by its prefix so old bcrypt accounts and
- * new argon2 accounts both authenticate.
- *
- *   $2a$…, $2b$…, $2y$…  → bcrypt
- *   $argon2…              → argon2
- */
 async function verifyPassword(stored: string, candidate: string): Promise<boolean> {
   if (!stored || !candidate) return false;
   try {
     if (stored.startsWith('$argon2')) {
       return await argon2.verify(stored, candidate);
     }
-    if (stored.startsWith('$2a$') || stored.startsWith('$2b$') || stored.startsWith('$2y$')) {
+    if (
+      stored.startsWith('$2a$') ||
+      stored.startsWith('$2b$') ||
+      stored.startsWith('$2y$')
+    ) {
       return await bcrypt.compare(candidate, stored);
     }
-    // Unknown format — refuse rather than guess.
     logger.warn('verifyPassword: unknown hash format encountered');
     return false;
   } catch (err: any) {
@@ -57,12 +58,12 @@ async function verifyPassword(stored: string, candidate: string): Promise<boolea
   }
 }
 
-/**
- * True if the stored hash is bcrypt — used to re-hash on successful
- * login so accounts migrate to argon2 without user action.
- */
 function isLegacyHash(stored: string): boolean {
-  return stored.startsWith('$2a$') || stored.startsWith('$2b$') || stored.startsWith('$2y$');
+  return (
+    stored.startsWith('$2a$') ||
+    stored.startsWith('$2b$') ||
+    stored.startsWith('$2y$')
+  );
 }
 
 // ------------------------------------------------------------------
@@ -81,16 +82,25 @@ function signAccessToken(user: any): string {
   );
 }
 
-function signRefreshToken(user: any): string {
+function signRefreshToken(user: any, ttlOverride?: string): string {
   return jwt.sign(
     { sub: String(user._id), type: 'refresh' },
     refreshSecret(),
-    { expiresIn: REFRESH_TOKEN_TTL }
+    { expiresIn: ttlOverride || REFRESH_TOKEN_TTL }
   );
 }
 
-function computeRefreshExpiry(): Date {
-  return new Date(Date.now() + REFRESH_TTL_DAYS * 24 * 60 * 60 * 1000);
+function serializeUser(user: any) {
+  return {
+    id: String(user._id),
+    name: user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim(),
+    username: user.username,
+    role: user.role,
+    schoolId: user.schoolId ? String(user.schoolId) : null,
+    formClassId: user.formClassId ? String(user.formClassId) : null,
+    subjectIds: (user.subjectIds || []).map((s: any) => String(s)),
+    parentId: user.parentId ? String(user.parentId) : null,
+  };
 }
 
 // ------------------------------------------------------------------
@@ -98,23 +108,43 @@ function computeRefreshExpiry(): Date {
 // ------------------------------------------------------------------
 export class AuthService {
   /**
-   * Username + password login. Handles legacy bcrypt hashes,
-   * upgrades them to argon2 on success, and rotates refresh tokens.
+   * Login. Flexible signature:
+   *   login(username, password)
+   *   login(username, password, { ip, userAgent })
+   *   login(username, password, ipString, userAgentString)
+   *   login(username, password, meta, remember)
+   *
+   * The 4-argument form is what school.controller.ts uses when it
+   * auto-logs a new owner in after onboarding.
    */
-  static async login(username: string, password: string, meta: any = {}) {
+  static async login(
+    username: string,
+    password: string,
+    metaOrIp?: any,
+    maybeUserAgentOrRemember?: any
+  ) {
     if (!username || !password) {
       throw new BadRequestError('Username and password are required');
     }
 
-    const uname = String(username).toLowerCase().trim();
+    // Normalize the trailing args into { meta, remember }.
+    let meta: any = {};
+    let remember = true;
 
-    // select('+password') because the schema marks it select:false.
-    const user = await User.findOne({ username: uname }).select('+password');
-    if (!user) {
-      // Same error message for missing user and bad password — avoids
-      // leaking which usernames exist.
-      throw new BadRequestError('Invalid username or password');
+    if (typeof metaOrIp === 'string') {
+      // (username, password, ip, userAgent)
+      meta = { ip: metaOrIp, userAgent: maybeUserAgentOrRemember };
+    } else if (metaOrIp && typeof metaOrIp === 'object') {
+      // (username, password, metaObject)
+      meta = metaOrIp;
+      if (typeof maybeUserAgentOrRemember === 'boolean') {
+        remember = maybeUserAgentOrRemember;
+      }
     }
+
+    const uname = String(username).toLowerCase().trim();
+    const user = await User.findOne({ username: uname }).select('+password');
+    if (!user) throw new BadRequestError('Invalid username or password');
     if (!user.isActive) {
       const err: any = new Error('This account has been deactivated. Contact your school owner.');
       err.statusCode = 403;
@@ -122,36 +152,29 @@ export class AuthService {
     }
 
     const ok = await verifyPassword(user.password, password);
-    if (!ok) {
-      throw new BadRequestError('Invalid username or password');
-    }
+    if (!ok) throw new BadRequestError('Invalid username or password');
 
-    // Transparent migration: if we just verified a bcrypt hash, replace
-    // it with argon2 so future logins are faster and the storage format
-    // is uniform.
+    // Transparent migration of bcrypt → argon2.
     if (isLegacyHash(user.password)) {
       try {
-        user.password = password;            // pre-save hook rehashes with argon2
+        user.password = password;
         await user.save();
         logger.info(`Migrated bcrypt → argon2 hash for ${user.username}`);
       } catch (err: any) {
-        // Migration failing shouldn't break login — the user already
-        // authenticated successfully.
         logger.warn(`Failed to migrate password hash for ${user.username}: ${err?.message}`);
       }
     }
 
-    // Issue tokens.
     const accessToken = signAccessToken(user);
-    const refreshToken = signRefreshToken(user);
+    const refreshToken = remember
+      ? signRefreshToken(user)
+      : signRefreshToken(user, '8h');
 
-    // Persist the refresh token (bounded to the last 5 active sessions).
     user.refreshTokens = [refreshToken, ...(user.refreshTokens || []).slice(0, 4)];
     user.lastLogin = new Date();
     user.lastLoginAt = new Date();
     await user.save();
 
-    // Audit — best-effort, ignore failures.
     try {
       await AuditLog.create({
         actor: user.username,
@@ -165,22 +188,13 @@ export class AuthService {
     return {
       accessToken,
       refreshToken,
-      user: {
-        id: String(user._id),
-        name: user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim(),
-        username: user.username,
-        role: user.role,
-        schoolId: user.schoolId ? String(user.schoolId) : null,
-        formClassId: user.formClassId ? String(user.formClassId) : null,
-        subjectIds: (user.subjectIds || []).map((s) => String(s)),
-        parentId: user.parentId ? String(user.parentId) : null,
-      },
+      user: serializeUser(user),
     };
   }
 
   /**
-   * Rotate a refresh token into a new access + refresh pair. Called by
-   * the frontend when a request returns 401.
+   * Rotate a refresh token. Named `refresh` internally; aliased below
+   * as `refreshToken` so callers using either name compile.
    */
   static async refresh(refreshToken: string) {
     if (!refreshToken) throw new BadRequestError('Refresh token required');
@@ -200,7 +214,6 @@ export class AuthService {
       throw new BadRequestError('Account not found or inactive');
     }
 
-    // Token must be one of the stored ones (prevents replay after logout).
     if (!(user.refreshTokens || []).includes(refreshToken)) {
       throw new BadRequestError('Refresh token revoked');
     }
@@ -208,7 +221,6 @@ export class AuthService {
     const newAccess = signAccessToken(user);
     const newRefresh = signRefreshToken(user);
 
-    // Replace the old token with the new one (rotation).
     user.refreshTokens = [
       newRefresh,
       ...(user.refreshTokens || []).filter((t) => t !== refreshToken).slice(0, 4),
@@ -218,24 +230,17 @@ export class AuthService {
     return {
       accessToken: newAccess,
       refreshToken: newRefresh,
-      user: {
-        id: String(user._id),
-        name: user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim(),
-        username: user.username,
-        role: user.role,
-        schoolId: user.schoolId ? String(user.schoolId) : null,
-        formClassId: user.formClassId ? String(user.formClassId) : null,
-        subjectIds: (user.subjectIds || []).map((s) => String(s)),
-        parentId: user.parentId ? String(user.parentId) : null,
-      },
+      user: serializeUser(user),
     };
   }
 
   /**
-   * Log out — remove the specific refresh token from the stored list.
-   * Idempotent: logging out with a token that isn't stored still
-   * returns success so the frontend never gets stuck.
+   * Alias — some controllers reference `refreshToken` instead of `refresh`.
    */
+  static async refreshToken(refreshToken: string) {
+    return AuthService.refresh(refreshToken);
+  }
+
   static async logout(refreshToken: string) {
     if (!refreshToken) return { success: true };
     try {
@@ -245,15 +250,10 @@ export class AuthService {
         user.refreshTokens = (user.refreshTokens || []).filter((t) => t !== refreshToken);
         await user.save();
       }
-    } catch (_) {
-      // Ignore — logged out is logged out.
-    }
+    } catch (_) {}
     return { success: true };
   }
 
-  /**
-   * Log out everywhere — clear every stored refresh token for this user.
-   */
   static async logoutAll(userId: string) {
     if (!mongoose.isValidObjectId(userId)) {
       throw new BadRequestError('Invalid user id');
@@ -265,9 +265,6 @@ export class AuthService {
     return { success: true };
   }
 
-  /**
-   * Change own password — verifies the old one first.
-   */
   static async changePassword(userId: string, oldPassword: string, newPassword: string) {
     if (!newPassword || newPassword.length < 6) {
       throw new BadRequestError('New password must be at least 6 characters');
@@ -279,10 +276,9 @@ export class AuthService {
     if (!ok) throw new BadRequestError('Current password is incorrect');
 
     user.password = newPassword;
-    user.refreshTokens = []; // end every other session
+    user.refreshTokens = [];
     await user.save();
 
-    // Audit — best-effort.
     try {
       await AuditLog.create({
         actor: user.username,
