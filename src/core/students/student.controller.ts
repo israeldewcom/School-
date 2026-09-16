@@ -1,7 +1,7 @@
 // src/core/students/student.controller.ts
 import { Request, Response, NextFunction } from 'express';
 import { StudentService } from './student.service';
-import { getUserScope, studentFilterFromScope } from '../../middleware/scope.middleware';
+import { getUserScope } from '../../middleware/scope.middleware';
 
 export class StudentController {
   static async list(req: Request, res: Response, next: NextFunction) {
@@ -14,7 +14,6 @@ export class StudentController {
         if (scope.classIds.length === 1) {
           query.classId = scope.classIds[0];
         } else if (query.classId && !scope.classIds.includes(String(query.classId))) {
-          // Requesting a class outside scope — return empty.
           res.json({ success: true, data: [] });
           return;
         }
@@ -23,6 +22,11 @@ export class StudentController {
       const students = await StudentService.list(req.schoolId!, query);
       res.json({ success: true, data: students });
     } catch (err) { next(err); }
+  }
+
+  // Aliases — route file references these names.
+  static async getStudents(req: Request, res: Response, next: NextFunction) {
+    return StudentController.list(req, res, next);
   }
 
   static async getAll(req: Request, res: Response, next: NextFunction) {
@@ -34,6 +38,10 @@ export class StudentController {
       const student = await StudentService.getById(req.schoolId!, req.params.id);
       res.json({ success: true, data: student });
     } catch (err) { next(err); }
+  }
+
+  static async getStudent(req: Request, res: Response, next: NextFunction) {
+    return StudentController.getById(req, res, next);
   }
 
   static async create(req: Request, res: Response, next: NextFunction) {
