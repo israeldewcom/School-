@@ -1,120 +1,152 @@
+// src/middleware/auth.middleware.ts
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import mongoose from 'mongoose';
 import { User } from '../models/User';
-import { getSession, deleteAllUserSessions } from '../config/mongoStore';
-import { env } from '../config/env';
-import { UnauthorizedError, ForbiddenError } from '../utils/errors';
 import logger from '../config/logger';
 
-declare global {
-  namespace Express {
-    interface Request {
-      user?: any;
-      userId?: string;
-      schoolId?: string;
-      token?: string;
-      sessionId?: string;
+function accessSecret(): string {
+  return process.env.JWT_SECRET || 'change-me-in-env';
+}
+
+/**
+ * Authentication middleware.
+ *
+ * Reads the user id from any of `sub`, `id`, or `userId` in the JWT
+ * payload so it works regardless of which convention the token signer
+ * used. Attaches the full user document to req.user plus the derived
+ * fields (userId, userRole, schoolId) that downstream services read.
+ *
+ * Never assumes a field exists. Any missing field results in a clean
+ * 401/403, not a 500.
+ */
+export async function authMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const header = String(req.headers.authorization || '');
+    if (!header.startsWith('Bearer ')) {
+      res.status(401).json({ success: false, message: 'Not authenticated' });
+      return;
     }
+
+    const token = header.slice(7).trim();
+    if (!token) {
+      res.status(401).json({ success: false, message: 'Not authenticated' });
+      return;
+    }
+
+    let payload: any;
+    try {
+      payload = jwt.verify(token, accessSecret());
+    } catch (err: any) {
+      const msg = err?.name === 'TokenExpiredError'
+        ? 'Token expired'
+        : 'Invalid authentication token';
+      res.status(401).json({ success: false, message: msg });
+      return;
+    }
+
+    // Extract the user id from any of the three conventions.
+    const userId = payload?.sub || payload?.id || payload?.userId;
+    if (!userId || !mongoose.isValidObjectId(userId)) {
+      res.status(401).json({ success: false, message: 'Malformed token' });
+      return;
+    }
+
+    const user = await User.findById(userId).lean();
+    if (!user) {
+      res.status(401).json({ success: false, message: 'User not found' });
+      return;
+    }
+    if (!(user as any).isActive) {
+      res.status(403).json({
+        success: false,
+        message: 'This account has been deactivated. Contact your school owner.',
+      });
+      return;
+    }
+
+    // Attach everything downstream code might read. The full user doc
+    // is present for services that need fields like formClassId or
+    // subjectIds, and the individual convenience fields are present so
+    // no service has to dig through req.user to find them.
+    (req as any).user = user;
+    (req as any).userId = String((user as any)._id);
+    (req as any).userRole = (user as any).role;
+    (req as any).schoolId = (user as any).schoolId
+      ? String((user as any).schoolId)
+      : undefined;
+
+    next();
+  } catch (err: any) {
+    logger.error(`authMiddleware: unexpected failure — ${err?.message}`, { stack: err?.stack });
+    res.status(500).json({ success: false, message: 'Authentication error' });
   }
 }
 
-export const authMiddleware = async (req: Request, _res: Response, next: NextFunction) => {
-  // ================================================================
-  // 🚀 BYPASS authentication for public endpoints
-  // ================================================================
-  if (req.path === '/api/v1/schools/onboard' || req.path === '/api/v1/schools/ping') {
-    return next();
+/**
+ * Requires the authenticated user to have a school context. Runs after
+ * authMiddleware. Used to gate every school-scoped route.
+ */
+export async function requireSchoolMembership(req: Request, res: Response, next: NextFunction): Promise<void> {
+  const role = (req as any).userRole;
+  if (role === 'SUPER_ADMIN') {
+    // Super admin has no school context but can hit platform routes
+    // which are mounted separately. If they reach here, deny.
+    res.status(403).json({ success: false, message: 'No school membership' });
+    return;
   }
+  if (!(req as any).schoolId) {
+    res.status(403).json({ success: false, message: 'No school membership' });
+    return;
+  }
+  next();
+}
 
-  // ================================================================
-  // 🔐 Authentication for all other routes
-  // ================================================================
+/**
+ * Same shape as requireSchoolMembership — kept as a separate export so
+ * existing imports don't break. In this codebase the two middlewares
+ * do the same job.
+ */
+export async function requireSchoolContext(req: Request, res: Response, next: NextFunction): Promise<void> {
+  if (!(req as any).schoolId) {
+    res.status(403).json({ success: false, message: 'No school context' });
+    return;
+  }
+  next();
+}
+
+/**
+ * Optional middleware — attaches the user to req if a valid token is
+ * present, but never blocks the request. Useful for endpoints that
+ * behave differently for logged-in vs anonymous callers.
+ */
+export async function optionalAuth(req: Request, _res: Response, next: NextFunction): Promise<void> {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      throw new UnauthorizedError('No token provided');
+    const header = String(req.headers.authorization || '');
+    if (!header.startsWith('Bearer ')) return next();
+
+    const token = header.slice(7).trim();
+    if (!token) return next();
+
+    let payload: any;
+    try {
+      payload = jwt.verify(token, accessSecret());
+    } catch (_) {
+      return next();
     }
 
-    const token = authHeader.split(' ')[1];
-    req.token = token;
+    const userId = payload?.sub || payload?.id || payload?.userId;
+    if (!userId || !mongoose.isValidObjectId(userId)) return next();
 
-    const decoded = jwt.verify(token, env.JWT_ACCESS_SECRET) as { userId: string; jti: string };
-    req.sessionId = decoded.jti;
+    const user = await User.findById(userId).lean();
+    if (!user || !(user as any).isActive) return next();
 
-    // Session doc doubles as the revocation check: logout deletes it, so a
-    // missing session means either "genuinely expired" or "revoked at
-    // logout" — both correctly result in rejecting the token here.
-    const sessionData = await getSession(decoded.jti);
-    if (!sessionData) {
-      throw new UnauthorizedError('Session expired');
-    }
-    if (sessionData.userId !== decoded.userId) {
-      throw new UnauthorizedError('Invalid session');
-    }
-
-    const user = await User.findById(decoded.userId)
-      .select('-password -refreshTokens')
-      .populate('schoolId', 'name slug status');
-    if (!user || !user.isActive) {
-      throw new UnauthorizedError('User not found or inactive');
-    }
-
-    req.user = user;
-    req.userId = user._id.toString();
-    req.schoolId = sessionData.schoolId || user.schoolId?._id?.toString() || undefined;
-
-    next();
-  } catch (error) {
-    if (error instanceof jwt.JsonWebTokenError) {
-      next(new UnauthorizedError('Invalid token'));
-    } else if (error instanceof jwt.TokenExpiredError) {
-      next(new UnauthorizedError('Token expired'));
-    } else {
-      next(error);
-    }
-  }
-};
-
-export const requireSchoolMembership = async (req: Request, _res: Response, next: NextFunction) => {
-  if (!req.user) {
-    return next(new UnauthorizedError('Authentication required'));
-  }
-
-  if (req.user.role === 'SUPER_ADMIN') {
-    const overrideSchoolId = req.headers['x-school-id'] as string;
-    if (overrideSchoolId) {
-      req.schoolId = overrideSchoolId;
-      logger.info(`Super admin ${req.user.email} accessing school ${overrideSchoolId}`);
-    }
-    return next();
-  }
-
-  if (!req.schoolId) {
-    return next(new ForbiddenError('No school context available'));
-  }
-
-  const userSchoolId = req.user.schoolId?._id?.toString();
-  if (userSchoolId && userSchoolId !== req.schoolId) {
-    return next(new ForbiddenError('You do not have access to this school'));
-  }
-
+    (req as any).user = user;
+    (req as any).userId = String((user as any)._id);
+    (req as any).userRole = (user as any).role;
+    (req as any).schoolId = (user as any).schoolId
+      ? String((user as any).schoolId)
+      : undefined;
+  } catch (_) {}
   next();
-};
-
-export const requireSchoolContext = async (req: Request, _res: Response, next: NextFunction) => {
-  if (!req.schoolId) {
-    return next(new ForbiddenError('School context required'));
-  }
-  next();
-};
-
-// Refresh token theft detection and revocation
-export const revokeRefreshTokenFamily = async (userId: string, _sessionId: string): Promise<void> => {
-  const user = await User.findById(userId);
-  if (!user) return;
-  user.refreshTokens = [];
-  await user.save();
-
-  await deleteAllUserSessions(userId);
-  logger.warn(`Revoked all sessions for user ${userId} due to possible token theft`);
-};
+}
