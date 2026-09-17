@@ -11,12 +11,9 @@ import { BadRequestError, NotFoundError } from '../../middleware/error.middlewar
 
 const config: any = (envConfig as any).default || envConfig;
 
-// ------------------------------------------------------------------
-// Session configuration
-// ------------------------------------------------------------------
 const ACCESS_TOKEN_TTL = '15m';
-const REFRESH_TOKEN_TTL = '90d';   // Sliding 90-day window
-const ABSOLUTE_SESSION_DAYS = 0;   // 0 = disabled (sliding only)
+const REFRESH_TOKEN_TTL = '90d';
+const ABSOLUTE_SESSION_DAYS = 0;
 
 function accessSecret(): string {
   return process.env.JWT_SECRET || config.JWT_SECRET || 'change-me-in-env';
@@ -32,9 +29,6 @@ function refreshSecret(): string {
   );
 }
 
-// ------------------------------------------------------------------
-// Password verification — supports bcrypt (legacy) + argon2 (current)
-// ------------------------------------------------------------------
 async function verifyPassword(stored: string, candidate: string): Promise<boolean> {
   if (!stored || !candidate) return false;
   try {
@@ -57,16 +51,26 @@ function isLegacyHash(stored: string): boolean {
 }
 
 // ------------------------------------------------------------------
-// Token helpers
+// Token signers
+//
+// The access token includes `sub`, `id`, and `userId` (all pointing
+// at the same value) so any middleware reading any of the three
+// conventions gets the right user id. This is deliberately redundant —
+// it costs 40 bytes per token and eliminates an entire class of
+// "user id is undefined" bugs.
 // ------------------------------------------------------------------
 function signAccessToken(user: any): string {
   const options: SignOptions = { expiresIn: ACCESS_TOKEN_TTL as any };
   return jwt.sign(
     {
       sub: String(user._id),
+      id: String(user._id),
+      userId: String(user._id),
       role: user.role,
       schoolId: user.schoolId ? String(user.schoolId) : undefined,
       name: user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim(),
+      formClassId: user.formClassId ? String(user.formClassId) : undefined,
+      parentId: user.parentId ? String(user.parentId) : undefined,
     },
     accessSecret(),
     options
@@ -78,7 +82,12 @@ function signRefreshToken(user: any, ttlOverride?: string): string {
     expiresIn: (ttlOverride || REFRESH_TOKEN_TTL) as any,
   };
   return jwt.sign(
-    { sub: String(user._id), type: 'refresh' },
+    {
+      sub: String(user._id),
+      id: String(user._id),
+      userId: String(user._id),
+      type: 'refresh',
+    },
     refreshSecret(),
     options
   );
@@ -100,15 +109,6 @@ function serializeUser(user: any) {
   };
 }
 
-// ------------------------------------------------------------------
-// Safe session-start helpers
-//
-// The User interface may or may not declare `sessionStartedAt`
-// depending on which version of models/User.ts is deployed. These
-// helpers read and write the field via `as any` so this service
-// compiles in either case. The value is still persisted to MongoDB
-// when the field exists in the schema.
-// ------------------------------------------------------------------
 function getSessionStart(user: any): Date | null {
   const v = (user as any).sessionStartedAt;
   return v ? new Date(v) : null;
@@ -118,14 +118,7 @@ function setSessionStart(user: any, date: Date | null) {
   (user as any).sessionStartedAt = date;
 }
 
-// ------------------------------------------------------------------
-// Service
-// ------------------------------------------------------------------
 export class AuthService {
-  /**
-   * Login. Flexible signature so onboarding code can pass either a
-   * meta object or raw ip + userAgent strings.
-   */
   static async login(
     username: string,
     password: string,
@@ -160,7 +153,6 @@ export class AuthService {
     const ok = await verifyPassword(user.password, password);
     if (!ok) throw new BadRequestError('Invalid username or password');
 
-    // Transparent migration of bcrypt → argon2.
     if (isLegacyHash(user.password)) {
       try {
         user.password = password;
@@ -179,11 +171,7 @@ export class AuthService {
     user.refreshTokens = [refreshToken, ...(user.refreshTokens || []).slice(0, 4)];
     user.lastLogin = new Date();
     user.lastLoginAt = new Date();
-
-    // Stamp session start via cast — works whether or not the model
-    // declares the field.
     setSessionStart(user, new Date());
-
     await user.save();
 
     try {
@@ -203,9 +191,6 @@ export class AuthService {
     };
   }
 
-  /**
-   * Rotate a refresh token into a new access + refresh pair.
-   */
   static async refresh(refreshToken: string) {
     if (!refreshToken) throw new BadRequestError('Refresh token required');
 
@@ -219,7 +204,10 @@ export class AuthService {
       throw new BadRequestError('Invalid token type');
     }
 
-    const user = await User.findById(payload.sub).select('+password');
+    const userId = payload.sub || payload.id || payload.userId;
+    if (!userId) throw new BadRequestError('Malformed refresh token');
+
+    const user = await User.findById(userId).select('+password');
     if (!user || !user.isActive) {
       throw new BadRequestError('Account not found or inactive');
     }
@@ -228,7 +216,6 @@ export class AuthService {
       throw new BadRequestError('Refresh token revoked');
     }
 
-    // Optional absolute session cap. Only enforced when enabled.
     if (ABSOLUTE_SESSION_DAYS > 0) {
       const startedAt = getSessionStart(user);
       if (startedAt) {
@@ -266,7 +253,9 @@ export class AuthService {
     if (!refreshToken) return { success: true };
     try {
       const payload: any = jwt.verify(refreshToken, refreshSecret());
-      const user = await User.findById(payload.sub);
+      const userId = payload.sub || payload.id || payload.userId;
+      if (!userId) return { success: true };
+      const user = await User.findById(userId);
       if (user) {
         user.refreshTokens = (user.refreshTokens || []).filter((t) => t !== refreshToken);
         if (user.refreshTokens.length === 0) {
@@ -317,10 +306,6 @@ export class AuthService {
     return { success: true };
   }
 
-  /**
-   * Return session status for the current user. The frontend uses this
-   * to display a warning banner when expiry is close.
-   */
   static async sessionStatus(userId: string) {
     if (!mongoose.isValidObjectId(userId)) {
       throw new BadRequestError('Invalid user id');
