@@ -55,6 +55,10 @@ export class UserService {
         id: String(s._id),
         name: s.name,
       })),
+      // Approval delegation — only meaningful for BURSAR but returned
+      // for every user so the frontend doesn't have to guess.
+      canApprovePayments: !!u.canApprovePayments,
+      canApprovePaymentsSetAt: u.canApprovePaymentsSetAt || null,
       lastLoginAt: u.lastLoginAt || u.lastLogin,
       createdAt: u.createdAt,
     }));
@@ -82,15 +86,11 @@ export class UserService {
     const firstName = nameParts[0] || '';
     const lastName = nameParts.slice(1).join(' ') || '';
 
-    // Always set a unique email. When the caller doesn't provide one,
-    // build a deterministic placeholder so the unique index never sees
-    // two nulls. This fixes "A record with that email already exists".
     const providedEmail = data.email && String(data.email).trim();
     const email = providedEmail
       ? String(providedEmail).toLowerCase()
       : `${username}.${Date.now().toString(36)}@${String(schoolId).slice(-6)}.local`;
 
-    // Guard against a duplicate provided email.
     if (providedEmail) {
       const dup = await User.findOne({ schoolId, email: email.toLowerCase() });
       if (dup) throw new BadRequestError('A user with that email already exists in this school.');
@@ -108,6 +108,7 @@ export class UserService {
       role: data.role,
       isActive: true,
       refreshTokens: [],
+      canApprovePayments: false,
     };
 
     switch (data.role) {
@@ -200,7 +201,6 @@ export class UserService {
         if (dup) throw new BadRequestError('That email is already used by another user.');
         user.email = lower;
       } else {
-        // Never leave email null — regenerate the placeholder.
         user.email = `${user.username}.${Date.now().toString(36)}@${String(schoolId).slice(-6)}.local`;
       }
     }
@@ -215,6 +215,11 @@ export class UserService {
       user.set('subjectIds', []);
       user.set('parentId', undefined);
       user.role = data.role;
+
+      // If the role changes away from BURSAR, drop any delegation.
+      if (data.role !== 'BURSAR') {
+        (user as any).canApprovePayments = false;
+      }
     }
 
     if (data.formClassId !== undefined) {
@@ -239,6 +244,69 @@ export class UserService {
 
     await user.save();
     return User.findById(user._id).select('-password').lean();
+  }
+
+  /**
+   * Grant or revoke payment-approval permission for a bursar.
+   *
+   * Only the proprietor (or super admin) can call this. The change
+   * takes effect on the bursar's next request because the auth
+   * middleware reloads the user document on every call — no cache
+   * invalidation needed.
+   */
+  static async setApprovalDelegation(
+    schoolId: string,
+    actorId: string,
+    targetUserId: string,
+    canApprovePayments: boolean
+  ) {
+    if (!mongoose.isValidObjectId(targetUserId)) {
+      throw new BadRequestError('Invalid user id');
+    }
+
+    const target = await User.findOne({ _id: targetUserId, schoolId });
+    if (!target) throw new NotFoundError('User not found');
+
+    if (target.role !== 'BURSAR') {
+      throw new BadRequestError(
+        'Payment approval can only be delegated to a bursar account.'
+      );
+    }
+    if (!target.isActive) {
+      throw new BadRequestError('Cannot change permissions for a deactivated account.');
+    }
+
+    const before = !!target.canApprovePayments;
+    (target as any).canApprovePayments = !!canApprovePayments;
+    (target as any).canApprovePaymentsSetBy = actorId;
+    (target as any).canApprovePaymentsSetAt = new Date();
+    await target.save();
+
+    try {
+      await AuditLog.create({
+        actor: actorId,
+        action: canApprovePayments
+          ? 'user.approval_delegated'
+          : 'user.approval_revoked',
+        resource: 'User',
+        resourceId: target._id,
+        before: { canApprovePayments: before },
+        after: { canApprovePayments: !!canApprovePayments },
+      });
+    } catch (_) {}
+
+    logger.info(
+      `Payment approval ${canApprovePayments ? 'granted to' : 'revoked from'} ${
+        target.username
+      } by ${actorId}`
+    );
+
+    return {
+      success: true,
+      userId: String(target._id),
+      username: target.username,
+      canApprovePayments: !!canApprovePayments,
+    };
   }
 
   static async delete(schoolId: string, actorId: string, id: string) {
