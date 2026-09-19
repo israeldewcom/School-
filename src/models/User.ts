@@ -13,45 +13,59 @@ export type UserRole =
   | 'PARENT'
   | 'STAFF';
 
+export const USER_ROLES: UserRole[] = [
+  'SUPER_ADMIN',
+  'SCHOOL_OWNER',
+  'ADMIN',
+  'HEAD_TEACHER',
+  'FORM_TEACHER',
+  'SUBJECT_TEACHER',
+  'BURSAR',
+  'PARENT',
+  'STAFF',
+];
+
 export interface IUser extends Document {
   schoolId?: mongoose.Types.ObjectId;
+
   username: string;
   password: string;
 
-  // Display fields — both shapes are kept because the auth service and
-  // the credential manager use different conventions.
-  name: string;              // full display name
-  firstName?: string;        // legacy — kept for auth.service.ts
-  lastName?: string;         // legacy — kept for auth.service.ts
+  name: string;
+  firstName?: string;
+  lastName?: string;
 
   email?: string;
   phone?: string;
+
   role: UserRole;
   isActive: boolean;
 
-  // Refresh tokens for JWT rotation. The auth service reads/writes this
-  // array directly, so it must exist on the schema even if unused by
-  // newer flows.
   refreshTokens: string[];
+  sessionStartedAt?: Date;
 
-  // Legacy lastLogin field — auth.service.ts writes to this on login.
   lastLogin?: Date;
-  // Newer alias kept in sync for consumers that read `lastLoginAt`.
   lastLoginAt?: Date;
 
-  // Link to a Staff or Parent record. Set for non-admin roles so the
-  // account ties back to a real person.
   staffId?: mongoose.Types.ObjectId;
   parentId?: mongoose.Types.ObjectId;
-
-  // Role-scoped fields.
-  //   FORM_TEACHER    → formClassId (exactly one class)
-  //   SUBJECT_TEACHER → subjectIds (references Subject docs, each
-  //                     with its own classIds array)
-  //   PARENT          → parentId
-  // Other roles ignore these.
   formClassId?: mongoose.Types.ObjectId;
-  subjectIds?: mongoose.Types.ObjectId[];
+  subjectIds: mongoose.Types.ObjectId[];
+
+  // ------------------------------------------------------------------
+  // Delegated payment approval
+  //
+  // Only meaningful for BURSAR. When true, the bursar can approve and
+  // reject payments exactly like the proprietor. The proprietor can
+  // flip this at any time — the change takes effect on the next
+  // request because the auth middleware reloads the user document.
+  //
+  // Tracked separately with audit fields so we know who granted it
+  // and when.
+  // ------------------------------------------------------------------
+  canApprovePayments: boolean;
+  canApprovePaymentsSetBy?: mongoose.Types.ObjectId;
+  canApprovePaymentsSetAt?: Date;
 
   createdAt: Date;
   updatedAt: Date;
@@ -71,59 +85,86 @@ const UserSchema = new Schema<IUser>(
 
     email: { type: String, trim: true, lowercase: true },
     phone: { type: String, trim: true },
-    role: {
-      type: String,
-      enum: [
-        'SUPER_ADMIN',
-        'SCHOOL_OWNER',
-        'ADMIN',
-        'HEAD_TEACHER',
-        'FORM_TEACHER',
-        'SUBJECT_TEACHER',
-        'BURSAR',
-        'PARENT',
-        'STAFF',
-      ],
-      required: true,
-      index: true,
-    },
-    isActive: { type: Boolean, default: true },
+
+    role: { type: String, enum: USER_ROLES, required: true, index: true },
+    isActive: { type: Boolean, default: true, index: true },
 
     refreshTokens: { type: [String], default: [] },
-
+    sessionStartedAt: { type: Date },
     lastLogin: { type: Date },
     lastLoginAt: { type: Date },
 
     staffId: { type: Schema.Types.ObjectId, ref: 'Staff' },
     parentId: { type: Schema.Types.ObjectId, ref: 'Parent' },
-
     formClassId: { type: Schema.Types.ObjectId, ref: 'Class' },
     subjectIds: [{ type: Schema.Types.ObjectId, ref: 'Subject' }],
+
+    canApprovePayments: { type: Boolean, default: false },
+    canApprovePaymentsSetBy: { type: Schema.Types.ObjectId, ref: 'User' },
+    canApprovePaymentsSetAt: { type: Date },
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+    toJSON: {
+      virtuals: true,
+      transform(_doc, ret: any) {
+        delete ret.password;
+        delete ret.refreshTokens;
+        return ret;
+      },
+    },
+    toObject: { virtuals: true },
+  }
 );
 
 UserSchema.index({ schoolId: 1, username: 1 }, { unique: true, sparse: true });
+UserSchema.index(
+  { schoolId: 1, email: 1 },
+  { unique: true, sparse: true, partialFilterExpression: { email: { $type: 'string' } } }
+);
+UserSchema.index({ schoolId: 1, role: 1 });
+UserSchema.index({ schoolId: 1, formClassId: 1 });
+UserSchema.index({ schoolId: 1, parentId: 1 });
 
-// Derive `name` from firstName/lastName when only those are provided,
-// and vice versa. Keeps both conventions coherent without requiring
-// callers to always supply every field.
 UserSchema.pre('save', function (next) {
-  if (!this.name && (this.firstName || this.lastName)) {
-    this.name = `${this.firstName || ''} ${this.lastName || ''}`.trim();
+  try {
+    const nameChanged =
+      this.isNew ||
+      this.isModified('name') ||
+      this.isModified('firstName') ||
+      this.isModified('lastName');
+
+    if (!nameChanged) return next();
+
+    const hasFirstLast = !!(this.firstName || this.lastName);
+    const hasFullName = !!(this.name && this.name.trim());
+
+    if (hasFirstLast && (!hasFullName || this.isModified('firstName') || this.isModified('lastName'))) {
+      this.name = `${this.firstName || ''} ${this.lastName || ''}`.trim();
+    } else if (hasFullName && (!hasFirstLast || this.isModified('name'))) {
+      const parts = String(this.name).trim().split(/\s+/);
+      this.firstName = parts[0] || '';
+      this.lastName = parts.slice(1).join(' ') || '';
+    }
+
+    next();
+  } catch (err) {
+    next(err as Error);
   }
-  if (this.name && (!this.firstName || !this.lastName)) {
-    const parts = String(this.name).split(' ').filter(Boolean);
-    if (!this.firstName && parts[0]) this.firstName = parts[0];
-    if (!this.lastName && parts.length > 1) this.lastName = parts.slice(1).join(' ');
-  }
-  next();
 });
 
 UserSchema.pre('save', async function (next) {
   if (!this.isModified('password')) return next();
   try {
-    this.password = await argon2.hash(this.password);
+    const pwd = String(this.password || '');
+    const alreadyHashed =
+      pwd.startsWith('$argon2') ||
+      pwd.startsWith('$2a$') ||
+      pwd.startsWith('$2b$') ||
+      pwd.startsWith('$2y$');
+    if (alreadyHashed) return next();
+
+    this.password = await argon2.hash(pwd);
     next();
   } catch (err) {
     next(err as Error);
@@ -131,11 +172,52 @@ UserSchema.pre('save', async function (next) {
 });
 
 UserSchema.methods.comparePassword = async function (candidate: string): Promise<boolean> {
+  const stored = String(this.password || '');
+  if (!stored || !candidate) return false;
+
   try {
-    return await argon2.verify(this.password, candidate);
+    if (stored.startsWith('$argon2')) {
+      return await argon2.verify(stored, candidate);
+    }
+    if (stored.startsWith('$2a$') || stored.startsWith('$2b$') || stored.startsWith('$2y$')) {
+      const bcrypt = await import('bcryptjs');
+      return await bcrypt.compare(candidate, stored);
+    }
+    return false;
   } catch {
     return false;
   }
+};
+
+UserSchema.virtual('displayName').get(function () {
+  return (
+    this.name ||
+    `${this.firstName || ''} ${this.lastName || ''}`.trim() ||
+    this.username
+  );
+});
+
+UserSchema.virtual('hasActiveSession').get(function () {
+  return Array.isArray(this.refreshTokens) && this.refreshTokens.length > 0;
+});
+
+UserSchema.statics.findByUsername = function (username: string, schoolId?: string) {
+  const filter: any = { username: String(username).toLowerCase().trim() };
+  if (schoolId && mongoose.isValidObjectId(schoolId)) {
+    filter.schoolId = schoolId;
+  }
+  return this.findOne(filter).select('+password');
+};
+
+UserSchema.statics.countByRole = async function (schoolId: string) {
+  if (!mongoose.isValidObjectId(schoolId)) return {};
+  const rows = await this.aggregate([
+    { $match: { schoolId: new mongoose.Types.ObjectId(schoolId), isActive: true } },
+    { $group: { _id: '$role', count: { $sum: 1 } } },
+  ]);
+  const out: Record<string, number> = {};
+  for (const r of rows) out[r._id] = r.count;
+  return out;
 };
 
 export const User = mongoose.model<IUser>('User', UserSchema);
