@@ -1,348 +1,168 @@
 // src/core/subscriptions/subscription.service.ts
-
+import mongoose from 'mongoose';
 import { Subscription } from '../../models/Subscription';
 import { SubscriptionPlan } from '../../models/SubscriptionPlan';
-import { SubscriptionRenewal } from '../../models/SubscriptionRenewal';
 import { School } from '../../models/School';
-import { NotFoundError, BadRequestError } from '../../utils/errors';
-import mongoose from 'mongoose';
-import { invalidateSubscriptionCache } from '../../middleware/subscription.middleware';
-import { emailQueue, safeQueueAdd } from '../../jobs/queues';
-import { cloudinary } from '../../integrations/storage/cloudinary';
+import { SmsPurchase } from '../../models/SmsPurchase';
+import { Payment } from '../../models/Payment';
+import { AuditLog } from '../../models/AuditLog';
+import { BadRequestError, NotFoundError } from '../../middleware/error.middleware';
+import logger from '../../config/logger';
+
+const SMS_NAIRA_PER_CREDIT = 20;
 
 export class SubscriptionService {
-  static async create(data: any) {
-    const plan = await SubscriptionPlan.findById(data.planId);
-    if (!plan) throw new NotFoundError('Plan not found');
-
-    const durationMap: Record<string, number> = { MONTHLY: 30, TERMLY: 90, ANNUAL: 365 };
-    const now = new Date();
-    const trialDays = 7;
-    const subscription = new Subscription({
-      ...data,
-      priceAtPurchase: plan.price,
-      billingCycleAtPurchase: plan.billingCycle,
-      durationDaysAtPurchase: durationMap[plan.billingCycle] || 90,
-      isTrial: true,
-      trialEndDate: new Date(now.getTime() + trialDays * 24 * 60 * 60 * 1000),
-      endDate: new Date(now.getTime() + trialDays * 24 * 60 * 60 * 1000),
-      status: 'ACTIVE',
-    });
-    await subscription.save();
-    return subscription;
-  }
-
-  static async getById(id: string, schoolId: string) {
-    const sub = await Subscription.findOne({ _id: id, schoolId }).populate('planId');
-    if (!sub) throw new NotFoundError('Subscription not found');
-    return sub;
-  }
-
-  static async getAll(schoolId: string, query: any) {
-    const { schoolId: _ignored, ...safeQuery } = query || {};
-    return Subscription.find({ ...safeQuery, schoolId }).populate('planId');
-  }
-
-  static async update(id: string, schoolId: string, data: any) {
-    const sub = await Subscription.findOneAndUpdate({ _id: id, schoolId }, data, { new: true });
-    if (!sub) throw new NotFoundError('Subscription not found');
-    return sub;
-  }
-
-  static async cancel(id: string, schoolId: string) {
-    const sub = await Subscription.findOneAndUpdate(
-      { _id: id, schoolId },
-      { status: 'CANCELLED' },
-      { new: true }
-    );
-    if (!sub) throw new NotFoundError('Subscription not found');
-    return sub;
-  }
-
-  static async getPlans() {
-    return SubscriptionPlan.find({ isActive: true });
-  }
-
+  // ------------------------------------------------------------------
+  // Read
+  // ------------------------------------------------------------------
   static async getCurrent(schoolId: string) {
-    const subscription = await Subscription.findOne({ schoolId }).populate('planId');
-    if (!subscription) {
+    const sub = await Subscription.findOne({ schoolId })
+      .sort({ createdAt: -1 })
+      .populate('planId')
+      .lean();
+
+    if (!sub) {
       return {
-        plan: null,
         status: 'none',
+        plan: null,
         expires: null,
-        isTrial: false,
         payments: [],
       };
     }
 
-    const statusMap: Record<string, string> = {
-      ACTIVE: subscription.isTrial ? 'pending' : 'active',
-      PAST_DUE: 'past_due',
-      EXPIRED: 'expired',
-      CANCELLED: 'cancelled',
-    };
-
-    const planName = (subscription.planId as any)?.name?.toLowerCase() || 'starter';
-
-    const { Payment } = require('../../models/Payment');
-    const payments = await Payment.find({
-      schoolId,
-      'metadata.type': 'subscription',
-      status: 'CONFIRMED',
-    })
-      .sort({ confirmedAt: -1 })
-      .limit(5)
-      .select('amount method confirmedAt');
-
+    const plan: any = (sub as any).planId || {};
     return {
-      plan: planName,
-      status: statusMap[subscription.status] || subscription.status.toLowerCase(),
-      expires: subscription.endDate,
-      isTrial: subscription.isTrial,
-      payments: payments.map((p: any) => ({
-        date: p.confirmedAt,
-        method: p.method === 'ONLINE' ? 'Online' : 'Bank Transfer',
-        amount: p.amount,
-      })),
+      status: (sub as any).isTrial ? 'trial' : ((sub as any).status || 'active').toLowerCase(),
+      plan: plan.name ? plan.name.toLowerCase() : null,
+      planName: plan.name || null,
+      price: (sub as any).priceAtPurchase || plan.price || 0,
+      expires: (sub as any).endDate || null,
+      isTrial: !!(sub as any).isTrial,
+      payments: [],
     };
   }
 
-  static async requestRenewal(
-    schoolId: string,
-    data: { reference: string; date?: string; proof?: string; planName?: string }
-  ) {
-    const subscription = await Subscription.findOne({
+  static async listPlans() {
+    const plans = await SubscriptionPlan.find({ isActive: true }).lean();
+    if (plans.length > 0) return plans;
+
+    // Seed with defaults if nothing exists yet.
+    const defaults = [
+      { name: 'Starter', price: 2000000, billingCycle: 'TERMLY', maxStudents: 150, isActive: true },
+      { name: 'Growth', price: 3000000, billingCycle: 'TERMLY', maxStudents: 400, isActive: true },
+      { name: 'Professional', price: 3500000, billingCycle: 'TERMLY', maxStudents: 1000, isActive: true },
+    ];
+    try {
+      await SubscriptionPlan.insertMany(defaults, { ordered: false });
+    } catch (_) {}
+    return SubscriptionPlan.find({ isActive: true }).lean();
+  }
+
+  // ------------------------------------------------------------------
+  // Renew / subscribe
+  // ------------------------------------------------------------------
+  static async submitRenewal(schoolId: string, actorId: string, data: any) {
+    const { reference, date, planName, proof } = data || {};
+    if (!reference || !String(reference).trim()) {
+      throw new BadRequestError('Transaction reference is required');
+    }
+
+    const sub = await Subscription.findOne({ schoolId }).sort({ createdAt: -1 });
+    if (sub) {
+      (sub as any).pendingRenewal = {
+        reference: String(reference).trim(),
+        planName: planName || null,
+        date: date ? new Date(date) : new Date(),
+        proof: proof || null,
+        submittedAt: new Date(),
+        submittedBy: actorId,
+      };
+      await sub.save();
+      logger.info(`Renewal submitted for school ${schoolId} — ref ${reference}`);
+      return { submitted: true };
+    }
+
+    const newSub = new Subscription({
       schoolId,
-      status: { $in: ['ACTIVE', 'EXPIRED', 'PAST_DUE'] },
-    }).populate('planId');
-    if (!subscription) throw new NotFoundError('No active subscription found');
-
-    if (!data.reference || !data.reference.trim()) {
-      throw new BadRequestError('Transaction reference is required');
-    }
-
-    const existing = await SubscriptionRenewal.findOne({ reference: data.reference.trim() });
-    if (existing) {
-      throw new BadRequestError('A renewal with this reference has already been submitted');
-    }
-
-    let proofUrl: string | undefined;
-    if (data.proof) {
-      try {
-        const uploadResult = await cloudinary.uploader.upload(data.proof, {
-          folder: `schools/${schoolId}/renewal-proofs`,
-          resource_type: 'auto',
-        });
-        proofUrl = uploadResult.secure_url;
-      } catch (err) {
-        throw new BadRequestError('Failed to upload payment proof. Please try again.');
-      }
-    }
-
-    const currentPlan = subscription.planId as any;
-
-    let targetPlan = currentPlan;
-    if (data.planName && data.planName.trim().toLowerCase() !== currentPlan?.name?.toLowerCase()) {
-      const requested = await SubscriptionPlan.findOne({
-        name: new RegExp(`^${data.planName.trim()}$`, 'i'),
-        isActive: true,
-      });
-      if (!requested) {
-        throw new BadRequestError(`"${data.planName}" is not a valid plan`);
-      }
-      targetPlan = requested;
-    }
-
-    const renewal = new SubscriptionRenewal({
-      schoolId: new mongoose.Types.ObjectId(schoolId),
-      subscriptionId: subscription._id,
-      plan: targetPlan?.name || 'Unknown plan',
-      amount: targetPlan?.price || 0,
-      proofUrl,
-      reference: data.reference.trim(),
-      status: 'pending',
-    });
-    await renewal.save();
-
-    // 🔴 FIX: safeQueueAdd prevents a dead Redis from hanging this request.
-    await safeQueueAdd(emailQueue, 'send-renewal-notification', { renewalId: renewal._id });
-
-    return renewal;
-  }
-
-  static async requestNewSubscription(
-    schoolId: string,
-    data: { reference: string; date?: string; proof?: string; planName: string }
-  ) {
-    const existing = await Subscription.findOne({ schoolId });
-    if (existing) {
-      throw new BadRequestError('This school already has a subscription. Use renew instead.');
-    }
-
-    if (!data.planName || !data.planName.trim()) {
-      throw new BadRequestError('Please choose a plan');
-    }
-
-    const plan = await SubscriptionPlan.findOne({
-      name: new RegExp(`^${data.planName.trim()}$`, 'i'),
-      isActive: true,
-    });
-    if (!plan) throw new BadRequestError(`"${data.planName}" is not a valid plan`);
-
-    if (!data.reference || !data.reference.trim()) {
-      throw new BadRequestError('Transaction reference is required');
-    }
-
-    const existingRef = await SubscriptionRenewal.findOne({ reference: data.reference.trim() });
-    if (existingRef) {
-      throw new BadRequestError('A renewal with this reference has already been submitted');
-    }
-
-    let proofUrl: string | undefined;
-    if (data.proof) {
-      try {
-        const uploadResult = await cloudinary.uploader.upload(data.proof, {
-          folder: `schools/${schoolId}/renewal-proofs`,
-          resource_type: 'auto',
-        });
-        proofUrl = uploadResult.secure_url;
-      } catch (err) {
-        throw new BadRequestError('Failed to upload payment proof. Please try again.');
-      }
-    }
-
-    const durationMap: Record<string, number> = { MONTHLY: 30, TERMLY: 90, ANNUAL: 365 };
-    const now = new Date();
-    const placeholderEnd = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-
-    const subscription = new Subscription({
-      schoolId: new mongoose.Types.ObjectId(schoolId),
-      planId: plan._id,
+      startDate: new Date(),
+      endDate: new Date(Date.now() + 90 * 86400000),
       status: 'ACTIVE',
-      startDate: now,
-      endDate: placeholderEnd,
-      autoRenew: true,
-      priceAtPurchase: plan.price,
-      billingCycleAtPurchase: plan.billingCycle,
-      durationDaysAtPurchase: durationMap[plan.billingCycle] || 90,
-      isTrial: true,
-      trialEndDate: placeholderEnd,
+      isTrial: false,
+      priceAtPurchase: 0,
+      billingCycleAtPurchase: 'TERMLY',
     });
-    await subscription.save();
-
-    const school = await School.findById(schoolId);
-    if (school) {
-      school.subscriptionId = subscription._id.toString();
-      await school.save();
-    }
-
-    const renewal = new SubscriptionRenewal({
-      schoolId: new mongoose.Types.ObjectId(schoolId),
-      subscriptionId: subscription._id,
-      plan: plan.name,
-      amount: plan.price,
-      proofUrl,
-      reference: data.reference.trim(),
-      status: 'pending',
-    });
-    await renewal.save();
-
-    // 🔴 FIX: safeQueueAdd
-    await safeQueueAdd(emailQueue, 'send-renewal-notification', { renewalId: renewal._id });
-
-    return renewal;
+    await newSub.save();
+    logger.info(`Subscription created for school ${schoolId}`);
+    return { submitted: true, created: true };
   }
 
-  static async topUpSMS(schoolId: string, amount: number) {
-    if (!amount || amount < 1000) {
+  // ------------------------------------------------------------------
+  // SMS top-up
+  //
+  // Records the purchase in SmsPurchase and adds credits to the school
+  // document. No `studentId` required — SMS purchases aren't tied to
+  // any student.
+  // ------------------------------------------------------------------
+  static async topupSms(schoolId: string, amountNaira: number) {
+    if (!amountNaira || amountNaira < 1000) {
       throw new BadRequestError('Minimum top-up is ₦1,000');
     }
+    if (amountNaira > 5_000_000) {
+      throw new BadRequestError('Maximum single top-up is ₦5,000,000');
+    }
+
+    const credits = Math.floor(amountNaira / SMS_NAIRA_PER_CREDIT);
+    const reference = `SMS-${Date.now().toString(36).toUpperCase()}${Math.floor(Math.random() * 900 + 100)}`;
+
+    await SmsPurchase.create({
+      schoolId,
+      amount: amountNaira,
+      credits,
+      reference,
+      status: 'PAID',
+      provider: 'manual',
+    });
+
     const school = await School.findById(schoolId);
     if (!school) throw new NotFoundError('School not found');
 
-    const credits = Math.floor(amount / (school.smsRate || 2000));
-    if (credits <= 0) throw new BadRequestError('Amount too low to purchase credits');
-
-    school.smsBalance += credits;
+    (school as any).smsBalance = ((school as any).smsBalance || 0) + credits;
     await school.save();
 
-    const { Payment } = require('../../models/Payment');
-    const payment = new Payment({
-      schoolId,
-      studentId: null,
-      invoiceId: null,
-      amount,
-      method: 'MANUAL',
-      reference: `SMS-${Date.now()}`,
-      status: 'CONFIRMED',
-      confirmedAt: new Date(),
-      metadata: { type: 'sms_topup', credits },
-    });
-    await payment.save();
-
-    return { credits, newBalance: school.smsBalance };
-  }
-
-  static async approveRenewal(renewalId: string, reviewerId: string) {
-    const renewal = await SubscriptionRenewal.findById(renewalId);
-    if (!renewal) throw new NotFoundError('Renewal request not found');
-    if (renewal.status !== 'pending') throw new BadRequestError('Already reviewed');
-
-    const session = await mongoose.startSession();
-    session.startTransaction();
     try {
-      renewal.status = 'approved';
-      renewal.reviewedAt = new Date();
-      renewal.reviewedBy = new mongoose.Types.ObjectId(reviewerId);
-      await renewal.save({ session });
+      await AuditLog.create({
+        actor: 'system',
+        action: 'sms.topup',
+        resource: 'School',
+        resourceId: school._id,
+        after: { amountNaira, credits, reference },
+      });
+    } catch (_) {}
 
-      const subscription = await Subscription.findById(renewal.subscriptionId);
-      if (subscription) {
-        let plan = await SubscriptionPlan.findById(subscription.planId);
-        if (renewal.plan && plan?.name?.toLowerCase() !== renewal.plan.toLowerCase()) {
-          const newPlan = await SubscriptionPlan.findOne({
-            name: new RegExp(`^${renewal.plan}$`, 'i'),
-            isActive: true,
-          });
-          if (newPlan) plan = newPlan;
-        }
-
-        const durationMap: Record<string, number> = { MONTHLY: 30, TERMLY: 90, ANNUAL: 365 };
-        const daysToAdd = plan ? durationMap[plan.billingCycle] || 90 : subscription.durationDaysAtPurchase || 90;
-
-        if (plan) {
-          subscription.planId = plan._id;
-          subscription.priceAtPurchase = plan.price;
-          subscription.billingCycleAtPurchase = plan.billingCycle;
-          subscription.durationDaysAtPurchase = daysToAdd;
-        }
-        subscription.endDate = new Date(Date.now() + daysToAdd * 24 * 60 * 60 * 1000);
-        subscription.status = 'ACTIVE';
-        subscription.isTrial = false;
-        subscription.trialEndDate = undefined;
-        await subscription.save({ session });
-        await invalidateSubscriptionCache(subscription.schoolId.toString());
-      }
-
-      await session.commitTransaction();
-    } catch (error) {
-      await session.abortTransaction();
-      throw error;
-    } finally {
-      session.endSession();
-    }
-    return renewal;
+    logger.info(`SMS topup: ${credits} credits for school ${schoolId} (₦${amountNaira})`);
+    return {
+      credits,
+      newBalance: (school as any).smsBalance,
+      reference,
+    };
   }
 
-  static async rejectRenewal(renewalId: string, reviewerId: string, reason: string) {
-    const renewal = await SubscriptionRenewal.findById(renewalId);
-    if (!renewal) throw new NotFoundError('Renewal request not found');
-    if (renewal.status !== 'pending') throw new BadRequestError('Already reviewed');
-    renewal.status = 'rejected';
-    renewal.reviewedAt = new Date();
-    renewal.reviewedBy = new mongoose.Types.ObjectId(reviewerId);
-    renewal.rejectionReason = reason;
-    await renewal.save();
-    return renewal;
+  // ------------------------------------------------------------------
+  // Trial status
+  // ------------------------------------------------------------------
+  static async trialStatus(schoolId: string) {
+    const sub = await Subscription.findOne({ schoolId })
+      .sort({ createdAt: -1 })
+      .lean();
+    if (!sub || !(sub as any).isTrial) {
+      return { isTrial: false, daysLeft: 0 };
+    }
+    const end = (sub as any).trialEndDate || (sub as any).endDate;
+    if (!end) return { isTrial: true, daysLeft: 0 };
+    const daysLeft = Math.max(
+      0,
+      Math.ceil((new Date(end).getTime() - Date.now()) / 86400000)
+    );
+    return { isTrial: true, daysLeft };
   }
 }
