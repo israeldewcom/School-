@@ -2,13 +2,8 @@
 import { Request, Response, NextFunction } from 'express';
 
 export const PERMISSION_ROLES: Record<string, Record<string, string[]>> = {
-  // ---- Platform ----
-  platform: {
-    access: ['SUPER_ADMIN'],
-  },
+  platform: { access: ['SUPER_ADMIN'] },
 
-  // ---- Subscriptions & billing ----
-  // Fixes: SCHOOL_OWNER was denied on the Subscription page.
   subscriptions: {
     read:    ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN'],
     write:   ['SUPER_ADMIN', 'SCHOOL_OWNER'],
@@ -17,13 +12,11 @@ export const PERMISSION_ROLES: Record<string, Record<string, string[]>> = {
     cancel:  ['SUPER_ADMIN', 'SCHOOL_OWNER'],
   },
 
-  // ---- User & credential management ----
   users: {
     read:  ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN'],
     write: ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN'],
   },
 
-  // ---- Academic setup ----
   academics: {
     read:  ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'FORM_TEACHER', 'SUBJECT_TEACHER', 'BURSAR'],
     write: ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER'],
@@ -34,7 +27,6 @@ export const PERMISSION_ROLES: Record<string, Record<string, string[]>> = {
     write: ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN'],
   },
 
-  // ---- People ----
   students: {
     read:  ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'FORM_TEACHER', 'SUBJECT_TEACHER', 'BURSAR', 'PARENT'],
     write: ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN'],
@@ -48,10 +40,12 @@ export const PERMISSION_ROLES: Record<string, Record<string, string[]>> = {
     write: ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN'],
   },
 
-  // ---- Finance ----
   payments: {
     read:    ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'BURSAR', 'PARENT'],
     write:   ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'BURSAR'],
+    // NOTE: approve is deliberately absent from BURSAR here. It's
+    // handled by the delegatable middleware below, which reads the
+    // user's per-account delegation flag.
     approve: ['SUPER_ADMIN', 'SCHOOL_OWNER'],
   },
   fees: {
@@ -67,7 +61,6 @@ export const PERMISSION_ROLES: Record<string, Record<string, string[]>> = {
     write: ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'BURSAR'],
   },
 
-  // ---- Academics (day to day) ----
   attendance: {
     read:   ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'FORM_TEACHER', 'SUBJECT_TEACHER', 'PARENT'],
     write:  ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'FORM_TEACHER', 'SUBJECT_TEACHER'],
@@ -86,13 +79,11 @@ export const PERMISSION_ROLES: Record<string, Record<string, string[]>> = {
     write: ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'FORM_TEACHER'],
   },
 
-  // ---- Comms ----
   communications: {
     read:  ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'BURSAR'],
     write: ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'BURSAR'],
   },
 
-  // ---- System ----
   analytics: {
     read: ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'BURSAR'],
   },
@@ -143,6 +134,72 @@ export function requirePermission(resource: string, action: string) {
   };
 }
 
+/**
+ * A permission that can be delegated per-account.
+ *
+ * Base roles (SUPER_ADMIN, SCHOOL_OWNER) are always allowed. For
+ * delegatable roles (BURSAR by default), the middleware reads the
+ * user's delegation flag from the request-scoped user document —
+ * which the auth middleware just loaded fresh from the database on
+ * this very request. That means if the proprietor revokes the
+ * delegation, the bursar's very next request is denied.
+ *
+ * This is used by the payment approve and reject routes.
+ */
+export function requireDelegatablePermission(
+  resource: string,
+  action: string,
+  delegatableRoles: string[] = ['BURSAR'],
+  delegationFlag: string = 'canApprovePayments'
+) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const user: any = (req as any).user;
+    const role = (req as any).userRole || user?.role;
+
+    if (!role) {
+      res.status(401).json({ success: false, message: 'Not authenticated' });
+      return;
+    }
+
+    // Super admin and owner bypass the delegation check entirely.
+    if (role === 'SUPER_ADMIN' || role === 'SCHOOL_OWNER') {
+      next();
+      return;
+    }
+
+    // Check role matrix first — if the role isn't even allowed, deny.
+    const baseAllowed = PERMISSION_ROLES[resource]?.[action] || [];
+    const isDelegatable = delegatableRoles.includes(role);
+    const isBaseAllowed = baseAllowed.includes(role);
+
+    if (!isDelegatable && !isBaseAllowed) {
+      res.status(403).json({
+        success: false,
+        message: `Your role (${role}) does not have permission to perform this action.`,
+      });
+      return;
+    }
+
+    // For delegatable roles, the account-level flag decides.
+    if (isDelegatable) {
+      const delegated = !!user?.[delegationFlag];
+      if (delegated) {
+        next();
+        return;
+      }
+      res.status(403).json({
+        success: false,
+        message:
+          'Payment approval is not enabled for your account. Ask the proprietor to grant you approval permission.',
+      });
+      return;
+    }
+
+    // Anything else that passed the base check.
+    next();
+  };
+}
+
 export function requireSuperAdmin() {
   return (req: Request, res: Response, next: NextFunction): void => {
     const role = (req as any).userRole || (req as any).user?.role;
@@ -154,10 +211,20 @@ export function requireSuperAdmin() {
   };
 }
 
-/**
- * Allow multiple actions on a resource (e.g. read OR write).
- * Useful when a route serves both owner and staff differently.
- */
+export function requireOwner() {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const role = (req as any).userRole || (req as any).user?.role;
+    if (role !== 'SUPER_ADMIN' && role !== 'SCHOOL_OWNER') {
+      res.status(403).json({
+        success: false,
+        message: 'Only the proprietor can perform this action.',
+      });
+      return;
+    }
+    next();
+  };
+}
+
 export function requireAnyPermission(resource: string, actions: string[]) {
   return (req: Request, res: Response, next: NextFunction): void => {
     const role = (req as any).userRole || (req as any).user?.role;
