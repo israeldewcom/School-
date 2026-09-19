@@ -4,11 +4,14 @@ import { Student } from '../../models/Student';
 import { Class } from '../../models/Class';
 import { Invoice } from '../../models/Invoice';
 import { Payment } from '../../models/Payment';
+import logger from '../../config/logger';
 import { BadRequestError, NotFoundError } from '../../middleware/error.middleware';
 
 export class StudentService {
   /**
    * Shape a raw student doc into the flat form the frontend expects.
+   * The status rule treats a student with no invoice as OUTSTANDING,
+   * not PAID — this was the reason new students showed as fully paid.
    */
   private static shape(s: any, feeTotals?: { expected: number; paid: number }) {
     const primaryParent = Array.isArray(s.parentIds) ? s.parentIds[0] : null;
@@ -16,11 +19,15 @@ export class StudentService {
 
     const expected = feeTotals?.expected ?? s.fees?.expected ?? 0;
     const paid = feeTotals?.paid ?? s.fees?.paid ?? 0;
+
     const status =
-      expected === 0 ? 'PAID'
-      : paid >= expected ? 'PAID'
-      : paid > 0 ? 'PARTIAL'
-      : 'OUTSTANDING';
+      expected === 0
+        ? 'OUTSTANDING'
+        : paid >= expected
+          ? 'PAID'
+          : paid > 0
+            ? 'PARTIAL'
+            : 'OUTSTANDING';
 
     return {
       id: String(s._id),
@@ -34,6 +41,7 @@ export class StudentService {
       gender: s.gender || '',
       dateOfBirth: s.dateOfBirth || null,
       address: s.address || '',
+      photo: s.photo || null,
       className,
       classId: s.classId?._id ? String(s.classId._id) : (s.classId ? String(s.classId) : null),
       guardian: primaryParent
@@ -55,7 +63,9 @@ export class StudentService {
       const invoices = await Invoice.find({
         schoolId,
         studentId: { $in: studentIds.map((id) => new mongoose.Types.ObjectId(id)) },
-      }).select('studentId total').lean();
+      })
+        .select('studentId total')
+        .lean();
 
       for (const inv of invoices) {
         const sid = String(inv.studentId);
@@ -68,7 +78,9 @@ export class StudentService {
         schoolId,
         studentId: { $in: studentIds.map((id) => new mongoose.Types.ObjectId(id)) },
         status: { $in: ['CONFIRMED', 'APPROVED'] },
-      }).select('studentId amount').lean();
+      })
+        .select('studentId amount')
+        .lean();
 
       for (const p of payments) {
         const sid = String(p.studentId);
@@ -107,9 +119,6 @@ export class StudentService {
     return students.map((s: any) => StudentService.shape(s, feeMap.get(String(s._id))));
   }
 
-  /**
-   * Alias used by controllers that expect `getAll`.
-   */
   static async getAll(schoolId: string, query: any = {}) {
     return StudentService.list(schoolId, query);
   }
@@ -147,7 +156,9 @@ export class StudentService {
       schoolId,
       admissionNumber: String(data.admissionNumber).trim(),
     });
-    if (dup) throw new BadRequestError('A student with that admission number already exists.');
+    if (dup) {
+      throw new BadRequestError('A student with that admission number already exists.');
+    }
 
     const payload: any = {
       schoolId,
@@ -164,16 +175,76 @@ export class StudentService {
       status: 'ACTIVE',
     };
 
-    // Only set dateOfBirth when we actually have one — avoids the
-    // "undefined not assignable to Date" issue.
     if (data.dateOfBirth) {
       payload.dateOfBirth = new Date(data.dateOfBirth);
+    }
+    if (data.photo) {
+      payload.photo = String(data.photo);
     }
 
     const student = new Student(payload);
     await student.save();
 
+    // Auto-generate the student's first invoice from the class's fee
+    // structure. Without this the student has expected=0 and their fee
+    // status is meaningless.
+    await StudentService.autoInvoiceForStudent(schoolId, String(student._id), data.classId);
+
     return StudentService.getById(schoolId, String(student._id));
+  }
+
+  /**
+   * Generates an invoice for a newly-created student from their class's
+   * active fee structure. Non-fatal on failure — the invoice can be
+   * generated later from the Invoices page.
+   */
+  private static async autoInvoiceForStudent(
+    schoolId: string,
+    studentId: string,
+    classId: string
+  ) {
+    try {
+      const FeeStructure = mongoose.model('FeeStructure');
+      const structure: any = await FeeStructure.findOne({
+        schoolId,
+        classId,
+        isActive: true,
+      })
+        .sort({ createdAt: -1 })
+        .lean();
+
+      if (!structure) {
+        logger.warn(
+          `autoInvoice: no fee structure for class ${classId}; student ${studentId} has no invoice`
+        );
+        return;
+      }
+
+      const existing = await Invoice.findOne({ schoolId, studentId, status: { $ne: 'CANCELLED' } });
+      if (existing) return; // already billed
+
+      const seq = `${Date.now().toString(36).toUpperCase()}${Math.floor(Math.random() * 900 + 100)}`;
+      await Invoice.create({
+        schoolId,
+        studentId,
+        classId,
+        sessionId: structure.sessionId,
+        termId: structure.termId,
+        invoiceNumber: `INV-${seq}`,
+        total: structure.totalAmount || 0,
+        amountPaid: 0,
+        status: 'ISSUED',
+        dueDate: new Date(Date.now() + 30 * 86400000),
+        items: (structure.feeItems || []).map((it: any) => ({
+          description: it.description || it.name || 'Fee',
+          amount: it.amount || 0,
+          categoryId: it.categoryId,
+        })),
+      });
+      logger.info(`Auto-invoiced student ${studentId} from structure ${structure._id}`);
+    } catch (err: any) {
+      logger.warn(`Auto-invoice failed for ${studentId}: ${err?.message}`);
+    }
   }
 
   static async update(schoolId: string, id: string, data: any) {
@@ -206,12 +277,31 @@ export class StudentService {
       }
     }
     if (data.address !== undefined) student.address = data.address;
+    if (data.photo !== undefined) student.photo = data.photo || undefined;
+
+    // Merge parentIds: keep existing, add new, dedupe.
     if (data.parentIds !== undefined && Array.isArray(data.parentIds)) {
-      student.parentIds = data.parentIds.filter((p: any) => mongoose.isValidObjectId(p));
+      const existing = new Set((student.parentIds || []).map((p: any) => String(p)));
+      for (const p of data.parentIds) {
+        if (mongoose.isValidObjectId(p)) existing.add(String(p));
+      }
+      student.parentIds = [...existing].map((s) => new mongoose.Types.ObjectId(s)) as any;
     }
 
     await student.save();
     return StudentService.getById(schoolId, id);
+  }
+
+  static async linkParent(schoolId: string, studentId: string, parentId: string) {
+    if (!mongoose.isValidObjectId(studentId)) throw new BadRequestError('Invalid student id');
+    if (!mongoose.isValidObjectId(parentId)) throw new BadRequestError('Invalid parent id');
+    const student = await Student.findOne({ _id: studentId, schoolId });
+    if (!student) throw new NotFoundError('Student not found');
+    const existing = new Set((student.parentIds || []).map((p: any) => String(p)));
+    existing.add(parentId);
+    student.parentIds = [...existing].map((s) => new mongoose.Types.ObjectId(s)) as any;
+    await student.save();
+    return StudentService.getById(schoolId, studentId);
   }
 
   static async delete(schoolId: string, id: string) {
