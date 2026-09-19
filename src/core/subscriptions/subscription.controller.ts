@@ -1,184 +1,56 @@
 // src/core/subscriptions/subscription.controller.ts
-
 import { Request, Response, NextFunction } from 'express';
 import { SubscriptionService } from './subscription.service';
-import { Subscription } from '../../models/Subscription';
-import { SubscriptionRenewal } from '../../models/SubscriptionRenewal';
 
 export class SubscriptionController {
-  static async create(req: Request, res: Response, next: NextFunction) {
-    try {
-      const data = { ...req.body, schoolId: req.schoolId };
-      const sub = await SubscriptionService.create(data);
-      res.status(201).json({ success: true, data: sub });
-      return; // explicit return
-    } catch (error) {
-      next(error);
-      return;
-    }
-  }
-
-  static async getSubscriptions(req: Request, res: Response, next: NextFunction) {
-    try {
-      const subs = await SubscriptionService.getAll(req.schoolId!, req.query);
-      res.json({ success: true, data: subs });
-      return;
-    } catch (error) {
-      next(error);
-      return;
-    }
-  }
-
-  static async getSubscription(req: Request, res: Response, next: NextFunction) {
-    try {
-      const sub = await SubscriptionService.getById(req.params.id, req.schoolId!);
-      res.json({ success: true, data: sub });
-      return;
-    } catch (error) {
-      next(error);
-      return;
-    }
-  }
-
-  static async update(req: Request, res: Response, next: NextFunction) {
-    try {
-      const sub = await SubscriptionService.update(req.params.id, req.schoolId!, req.body);
-      res.json({ success: true, data: sub });
-      return;
-    } catch (error) {
-      next(error);
-      return;
-    }
-  }
-
-  static async cancel(req: Request, res: Response, next: NextFunction) {
-    try {
-      const sub = await SubscriptionService.cancel(req.params.id, req.schoolId!);
-      res.json({ success: true, data: sub });
-      return;
-    } catch (error) {
-      next(error);
-      return;
-    }
-  }
-
-  static async getPlans(_req: Request, res: Response, next: NextFunction) {
-    try {
-      const plans = await SubscriptionService.getPlans();
-      res.json({ success: true, data: plans });
-      return;
-    } catch (error) {
-      next(error);
-      return;
-    }
-  }
-
-  static async getTrialStatus(req: Request, res: Response, next: NextFunction) {
-    try {
-      const sub = await Subscription.findOne({ schoolId: req.schoolId });
-      if (!sub) {
-        res.json({ hasTrial: false });
-        return;
-      }
-      const daysLeft = sub.trialEndDate ? Math.ceil((new Date(sub.trialEndDate).getTime() - Date.now()) / 86400000) : 0;
-      res.json({
-        isTrial: sub.isTrial || false,
-        daysLeft: Math.max(0, daysLeft),
-        trialEndDate: sub.trialEndDate,
-      });
-      return;
-    } catch (error) {
-      next(error);
-      return;
-    }
-  }
-
   static async getCurrent(req: Request, res: Response, next: NextFunction) {
     try {
-      const data = await SubscriptionService.getCurrent(req.schoolId!);
-      res.json({ success: true, data });
-      return;
-    } catch (error) {
-      next(error);
-      return;
-    }
+      const sub = await SubscriptionService.getCurrent(req.schoolId);
+      res.json({ success: true, data: sub });
+    } catch (err) { next(err); }
   }
 
-  static async requestRenewal(req: Request, res: Response, next: NextFunction) {
+  static async listPlans(_req: Request, res: Response, next: NextFunction) {
     try {
-      const { reference, date, proof, planName } = req.body;
-      const renewal = await SubscriptionService.requestRenewal(req.schoolId!, { reference, date, proof, planName });
-      res.status(201).json({ success: true, data: renewal });
-      return;
-    } catch (error) {
-      next(error);
-      return;
-    }
+      const plans = await SubscriptionService.listPlans();
+      res.json({ success: true, data: plans });
+    } catch (err) { next(err); }
   }
 
-  // First-time subscribe for a school with no Subscription document yet.
-  // Same payload shape as requestRenewal, but planName is required here
-  // since there's no existing plan to default to.
+  static async renew(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await SubscriptionService.submitRenewal(
+        req.schoolId,
+        req.userId,
+        req.body
+      );
+      res.json({ success: true, data: result });
+    } catch (err) { next(err); }
+  }
+
   static async subscribe(req: Request, res: Response, next: NextFunction) {
     try {
-      const { reference, date, proof, planName } = req.body;
-      const renewal = await SubscriptionService.requestNewSubscription(req.schoolId!, {
-        reference,
-        date,
-        proof,
-        planName,
-      });
-      res.status(201).json({ success: true, data: renewal });
-      return;
-    } catch (error) {
-      next(error);
-      return;
-    }
-  }
-
-  static async topUpSMS(req: Request, res: Response, next: NextFunction) {
-    try {
-      const { amount } = req.body;
-      const result = await SubscriptionService.topUpSMS(req.schoolId!, Number(amount));
+      const result = await SubscriptionService.submitRenewal(
+        req.schoolId,
+        req.userId,
+        req.body
+      );
       res.json({ success: true, data: result });
-      return;
-    } catch (error) {
-      next(error);
-      return;
-    }
+    } catch (err) { next(err); }
   }
 
-  static async getPendingRenewals(_req: Request, res: Response, next: NextFunction) {
+  static async topupSms(req: Request, res: Response, next: NextFunction) {
     try {
-      const renewals = await SubscriptionRenewal.find({ status: 'pending' }).populate('schoolId');
-      res.json({ success: true, data: renewals });
-      return;
-    } catch (error) {
-      next(error);
-      return;
-    }
+      const amount = Number(req.body?.amount);
+      const result = await SubscriptionService.topupSms(req.schoolId, amount);
+      res.json({ success: true, data: result });
+    } catch (err) { next(err); }
   }
 
-  static async approveRenewal(req: Request, res: Response, next: NextFunction) {
+  static async trialStatus(req: Request, res: Response, next: NextFunction) {
     try {
-      const renewal = await SubscriptionService.approveRenewal(req.params.id, req.userId!);
-      res.json({ success: true, data: renewal });
-      return;
-    } catch (error) {
-      next(error);
-      return;
-    }
-  }
-
-  static async rejectRenewal(req: Request, res: Response, next: NextFunction) {
-    try {
-      const { reason } = req.body;
-      const renewal = await SubscriptionService.rejectRenewal(req.params.id, req.userId!, reason);
-      res.json({ success: true, data: renewal });
-      return;
-    } catch (error) {
-      next(error);
-      return;
-    }
+      const result = await SubscriptionService.trialStatus(req.schoolId);
+      res.json({ success: true, data: result });
+    } catch (err) { next(err); }
   }
 }
