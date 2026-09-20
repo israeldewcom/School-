@@ -1,7 +1,12 @@
 // src/models/Invoice.ts
 import mongoose, { Schema, Document } from 'mongoose';
 
-export type InvoiceStatus = 'ISSUED' | 'PARTIALLY_PAID' | 'PAID' | 'CANCELLED';
+export type InvoiceStatus =
+  | 'ISSUED'
+  | 'PARTIALLY_PAID'
+  | 'PAID'
+  | 'CANCELLED'
+  | 'OVERDUE';
 
 export interface IInvoiceItem {
   description: string;
@@ -18,6 +23,7 @@ export interface IInvoice extends Document {
   invoiceNumber: string;
   total: number;
   amountPaid: number;
+  balance: number;
   status: InvoiceStatus;
   dueDate?: Date;
   items: IInvoiceItem[];
@@ -35,9 +41,10 @@ const InvoiceSchema = new Schema<IInvoice>(
     invoiceNumber: { type: String, required: true },
     total: { type: Number, required: true, min: 0 },
     amountPaid: { type: Number, default: 0, min: 0 },
+    balance: { type: Number, default: 0, min: 0 },
     status: {
       type: String,
-      enum: ['ISSUED', 'PARTIALLY_PAID', 'PAID', 'CANCELLED'],
+      enum: ['ISSUED', 'PARTIALLY_PAID', 'PAID', 'CANCELLED', 'OVERDUE'],
       default: 'ISSUED',
       index: true,
     },
@@ -50,11 +57,27 @@ const InvoiceSchema = new Schema<IInvoice>(
       },
     ],
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true },
+  }
 );
 
-// One invoice per student per session per term. Prevents the duplicate
-// invoice bug that was inflating student fee totals by 100x.
+// Keep `balance` in sync with total - amountPaid.
+InvoiceSchema.pre('save', function (next) {
+  this.balance = Math.max((this.total || 0) - (this.amountPaid || 0), 0);
+  // Auto-flip status as payments come in.
+  if (this.status !== 'CANCELLED') {
+    if (this.balance === 0 && this.total > 0) {
+      this.status = 'PAID';
+    } else if (this.amountPaid > 0) {
+      this.status = 'PARTIALLY_PAID';
+    }
+  }
+  next();
+});
+
 InvoiceSchema.index(
   { schoolId: 1, studentId: 1, sessionId: 1, termId: 1 },
   {
