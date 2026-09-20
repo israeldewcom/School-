@@ -1,294 +1,316 @@
 // src/core/automations/automation.service.ts
 import mongoose from 'mongoose';
-import jsonLogic from 'json-logic-js';
 import { Automation } from '../../models/Automation';
-import { Invoice } from '../../models/Invoice';
-import { Payment } from '../../models/Payment';
-import { Attendance } from '../../models/Attendance';
-import { smsQueue, emailQueue, safeQueueAdd } from '../../jobs/queues';
-import { BadRequestError, NotFoundError } from '../../middleware/error.middleware';
 import logger from '../../config/logger';
+import { BadRequestError, NotFoundError } from '../../middleware/error.middleware';
 
-interface AutomationAction {
-  type: string;
-  config?: any;
-}
+const VALID_ACTIONS = [
+  'SMS',
+  'EMAIL',
+  'IN_APP',
+  'WEBHOOK',
+  'SMS_TO_PARENT',
+  'SMS_TO_STAFF',
+] as const;
+
+const VALID_EVENTS = [
+  'fee_overdue',
+  'payment_received',
+  'attendance_low',
+  'invoice_issued',
+  'term_closed',
+  'student_enrolled',
+] as const;
 
 export class AutomationService {
-  static async list(schoolId: string) {
-    return Automation.find({ schoolId }).sort({ createdAt: -1 }).lean();
+  /**
+   * List automations for a school. Optional filters: event, isEnabled.
+   */
+  static async getAll(schoolId: string, query: any = {}) {
+    const filter: any = { schoolId };
+    if (query?.event) filter.event = query.event;
+    if (query?.isEnabled !== undefined) {
+      filter.isEnabled = query.isEnabled === true || query.isEnabled === 'true';
+    }
+    return Automation.find(filter).sort({ createdAt: -1 }).lean();
+  }
+
+  /**
+   * Alias for getAll — some call sites use `list`.
+   */
+  static async list(schoolId: string, query: any = {}) {
+    return AutomationService.getAll(schoolId, query);
+  }
+
+  static async getById(schoolId: string, id: string) {
+    if (!mongoose.isValidObjectId(id)) {
+      throw new BadRequestError('Invalid automation id');
+    }
+    const doc = await Automation.findOne({ _id: id, schoolId }).lean();
+    if (!doc) throw new NotFoundError('Automation not found');
+    return doc;
   }
 
   static async create(schoolId: string, data: any) {
-    if (!data?.name || !String(data.name).trim()) {
-      throw new BadRequestError('Rule name is required');
+    const name = String(data?.name || '').trim();
+    const event = String(data?.event || '').trim();
+
+    if (!name) throw new BadRequestError('Automation name is required');
+    if (!event) throw new BadRequestError('Event is required');
+    if (!(VALID_EVENTS as readonly string[]).includes(event)) {
+      throw new BadRequestError(
+        `Unsupported event. Must be one of: ${VALID_EVENTS.join(', ')}`
+      );
     }
-    if (!data?.event) {
-      throw new BadRequestError('Event is required');
+
+    const actions = Array.isArray(data?.actions) ? data.actions : [];
+    if (actions.length === 0) {
+      throw new BadRequestError('At least one action is required');
     }
-    const automation = new Automation({
+    for (const a of actions) {
+      if (!a || !(VALID_ACTIONS as readonly string[]).includes(a.type)) {
+        throw new BadRequestError(
+          `Invalid action type. Must be one of: ${VALID_ACTIONS.join(', ')}`
+        );
+      }
+    }
+
+    // Condition arrives as either a string or an object. Normalize to a
+    // validated JSON string (JSON-Logic).
+    let condition: string | undefined;
+    if (data?.condition !== undefined && data?.condition !== null) {
+      const raw =
+        typeof data.condition === 'string'
+          ? data.condition
+          : JSON.stringify(data.condition);
+      try {
+        JSON.parse(raw);
+      } catch (_) {
+        throw new BadRequestError('Condition must be valid JSON');
+      }
+      condition = raw;
+    }
+
+    const doc = await Automation.create({
       schoolId,
-      name: String(data.name).trim(),
-      event: data.event,
-      condition: data.condition || '{}',
-      actions: Array.isArray(data.actions) ? data.actions : [],
-      isEnabled: data.isEnabled !== false,
+      name,
+      event,
+      condition,
+      actions,
+      isEnabled: data?.isEnabled !== false,
     });
-    await automation.save();
-    return automation;
+
+    return AutomationService.getById(schoolId, String(doc._id));
   }
 
   static async update(schoolId: string, id: string, data: any) {
-    if (!mongoose.isValidObjectId(id)) throw new BadRequestError('Invalid automation id');
-    const a = await Automation.findOne({ _id: id, schoolId });
-    if (!a) throw new NotFoundError('Automation not found');
-    if (data.name !== undefined) a.name = String(data.name).trim();
-    if (data.event !== undefined) a.event = data.event;
-    if (data.condition !== undefined) a.condition = data.condition;
-    if (Array.isArray(data.actions)) a.actions = data.actions;
-    if (data.isEnabled !== undefined) a.isEnabled = !!data.isEnabled;
-    await a.save();
-    return a;
+    if (!mongoose.isValidObjectId(id)) {
+      throw new BadRequestError('Invalid automation id');
+    }
+    const doc = await Automation.findOne({ _id: id, schoolId });
+    if (!doc) throw new NotFoundError('Automation not found');
+
+    if (data?.name !== undefined) doc.name = String(data.name).trim();
+
+    if (data?.event !== undefined) {
+      const ev = String(data.event).trim();
+      if (!(VALID_EVENTS as readonly string[]).includes(ev)) {
+        throw new BadRequestError(
+          `Unsupported event. Must be one of: ${VALID_EVENTS.join(', ')}`
+        );
+      }
+      doc.event = ev;
+    }
+
+    if (data?.isEnabled !== undefined) doc.isEnabled = !!data.isEnabled;
+
+    if (data?.actions !== undefined) {
+      if (!Array.isArray(data.actions) || data.actions.length === 0) {
+        throw new BadRequestError('At least one action is required');
+      }
+      for (const a of data.actions) {
+        if (!a || !(VALID_ACTIONS as readonly string[]).includes(a.type)) {
+          throw new BadRequestError(
+            `Invalid action type. Must be one of: ${VALID_ACTIONS.join(', ')}`
+          );
+        }
+      }
+      doc.actions = data.actions;
+    }
+
+    if (data?.condition !== undefined) {
+      if (data.condition === null) {
+        doc.condition = undefined;
+      } else {
+        const raw =
+          typeof data.condition === 'string'
+            ? data.condition
+            : JSON.stringify(data.condition);
+        try {
+          JSON.parse(raw);
+        } catch (_) {
+          throw new BadRequestError('Condition must be valid JSON');
+        }
+        doc.condition = raw;
+      }
+    }
+
+    await doc.save();
+    return AutomationService.getById(schoolId, id);
   }
 
   static async toggle(schoolId: string, id: string) {
-    if (!mongoose.isValidObjectId(id)) throw new BadRequestError('Invalid automation id');
-    const a = await Automation.findOne({ _id: id, schoolId });
-    if (!a) throw new NotFoundError('Automation not found');
-    a.isEnabled = !a.isEnabled;
-    await a.save();
-    return a;
+    if (!mongoose.isValidObjectId(id)) {
+      throw new BadRequestError('Invalid automation id');
+    }
+    const doc = await Automation.findOne({ _id: id, schoolId });
+    if (!doc) throw new NotFoundError('Automation not found');
+
+    doc.isEnabled = !doc.isEnabled;
+    await doc.save();
+    return { id: String(doc._id), isEnabled: doc.isEnabled };
   }
 
   static async delete(schoolId: string, id: string) {
-    if (!mongoose.isValidObjectId(id)) throw new BadRequestError('Invalid automation id');
-    const a = await Automation.findOneAndDelete({ _id: id, schoolId });
-    if (!a) throw new NotFoundError('Automation not found');
-    return { deleted: true };
+    if (!mongoose.isValidObjectId(id)) {
+      throw new BadRequestError('Invalid automation id');
+    }
+    const doc = await Automation.findOneAndDelete({ _id: id, schoolId });
+    if (!doc) throw new NotFoundError('Automation not found');
+    return { deleted: true, id };
   }
 
-  static async test(schoolId: string, id: string) {
-    if (!mongoose.isValidObjectId(id)) throw new BadRequestError('Invalid automation id');
-    const a = await Automation.findOne({ _id: id, schoolId }).lean();
-    if (!a) throw new NotFoundError('Automation not found');
+  /**
+   * Execute (dry-run) an automation against a payload. Used by the
+   * /automations/:id/test endpoint. Does not queue real SMS or email —
+   * it evaluates the condition and reports which actions would run.
+   */
+  static async triggerAutomation(
+    schoolId: string,
+    id: string,
+    payload: any = {}
+  ) {
+    if (!mongoose.isValidObjectId(id)) {
+      throw new BadRequestError('Invalid automation id');
+    }
+    const doc = await Automation.findOne({ _id: id, schoolId });
+    if (!doc) throw new NotFoundError('Automation not found');
 
-    const result = await AutomationService.evaluate(a as any, schoolId);
-    return {
-      automationId: id,
-      event: (a as any).event,
-      matched: result.matched,
-      actions: result.actions,
-      sample: result.sample,
+    const conditionMatches = evaluateCondition(doc.condition, payload);
+
+    const result = {
+      automationId: String(doc._id),
+      name: doc.name,
+      event: doc.event,
+      isEnabled: doc.isEnabled,
+      condition: doc.condition || null,
+      payload,
+      conditionMatches,
+      actions: (doc.actions || []).map((a) => ({
+        type: a.type,
+        config: a.config || {},
+        wouldRun: conditionMatches && doc.isEnabled,
+      })),
+      evaluatedAt: new Date().toISOString(),
     };
-  }
 
-  // ------------------------------------------------------------------
-  // Runner — called by the automation worker on a schedule.
-  // ------------------------------------------------------------------
-  static async runAll(schoolId: string) {
-    const automations = await Automation.find({ schoolId, isEnabled: true }).lean();
-    const summary: any[] = [];
-
-    for (const a of automations) {
-      try {
-        const result = await AutomationService.evaluate(a as any, schoolId);
-        summary.push({
-          id: String((a as any)._id),
-          name: (a as any).name,
-          event: (a as any).event,
-          matched: result.matched,
-          dispatched: result.actions,
-        });
-      } catch (err: any) {
-        summary.push({
-          id: String((a as any)._id),
-          name: (a as any).name,
-          error: err?.message,
-        });
-      }
-    }
-    return { ran: automations.length, summary };
-  }
-
-  private static async evaluate(automation: any, schoolId: string) {
-    const event: string = automation.event;
-    let candidates: any[] = [];
-    let sample: any = null;
-
-    switch (event) {
-      case 'fee_overdue':
-        candidates = await AutomationService.findOverdueInvoices(schoolId);
-        break;
-      case 'payment_received':
-        candidates = await AutomationService.findRecentPayments(schoolId);
-        break;
-      case 'attendance_low':
-        candidates = await AutomationService.findLowAttendance(schoolId);
-        break;
-      case 'invoice_issued':
-        candidates = await AutomationService.findRecentInvoices(schoolId);
-        break;
-      default:
-        return { matched: 0, actions: 0, sample: null };
-    }
-
-    // Apply the JSON-Logic condition if set.
-    let condition: any = null;
+    // Record run metadata (best effort — don't fail the test if this
+    // write fails).
+    doc.lastRunAt = new Date();
+    doc.lastRunStatus = conditionMatches ? 'SUCCESS' : 'SKIPPED';
+    doc.lastRunMessage = conditionMatches
+      ? `Condition matched. ${doc.actions?.length || 0} action(s) would run.`
+      : 'Condition did not match — no actions would run.';
+    doc.runCount = (doc.runCount || 0) + 1;
     try {
-      condition = automation.condition ? JSON.parse(automation.condition) : null;
-    } catch (_) {}
-
-    const matched = condition
-      ? candidates.filter((c) => {
-          try { return jsonLogic.apply(condition, c); } catch (_) { return false; }
-        })
-      : candidates;
-
-    if (matched.length > 0) sample = matched[0];
-
-    // Dispatch actions.
-    let dispatched = 0;
-    for (const row of matched) {
-      for (const action of (automation.actions || []) as AutomationAction[]) {
-        try {
-          await AutomationService.dispatch(action, row, schoolId);
-          dispatched++;
-        } catch (err: any) {
-          logger.warn(`Automation action failed: ${err?.message}`);
-        }
-      }
+      await doc.save();
+    } catch (err: any) {
+      logger.warn(`automation test: could not persist run metadata — ${err?.message}`);
     }
 
-    return { matched: matched.length, actions: dispatched, sample };
-  }
-
-  private static async findOverdueInvoices(schoolId: string) {
-    // Compute the balance in the query since `balance` may not be set
-    // on every legacy invoice. Fall back to total - amountPaid.
-    const invoices = await Invoice.find({
-      schoolId,
-      status: { $in: ['ISSUED', 'PARTIALLY_PAID', 'OVERDUE'] },
-      dueDate: { $lt: new Date() },
-    })
-      .populate('studentId', 'fullName firstName lastName')
-      .lean()
-      .exec();
-
-    return (invoices as any[]).map((inv) => {
-      const balance =
-        typeof inv.balance === 'number'
-          ? inv.balance
-          : Math.max((inv.total || 0) - (inv.amountPaid || 0), 0);
-
-      return {
-        invoiceId: String(inv._id),
-        invoiceNumber: inv.invoiceNumber,
-        studentId: inv.studentId?._id ? String(inv.studentId._id) : String(inv.studentId),
-        studentName:
-          inv.studentId?.fullName ||
-          `${inv.studentId?.firstName || ''} ${inv.studentId?.lastName || ''}`.trim(),
-        total: inv.total,
-        amountPaid: inv.amountPaid,
-        balance,
-        daysOverdue: inv.dueDate
-          ? Math.floor((Date.now() - new Date(inv.dueDate).getTime()) / 86400000)
-          : 0,
-      };
-    });
-  }
-
-  private static async findRecentPayments(schoolId: string) {
-    const since = new Date(Date.now() - 24 * 3600 * 1000);
-    const payments = await Payment.find({
-      schoolId,
-      status: { $in: ['APPROVED', 'CONFIRMED'] },
-      createdAt: { $gte: since },
-    })
-      .populate('studentId', 'fullName firstName lastName')
-      .lean()
-      .exec();
-
-    return (payments as any[]).map((p) => ({
-      paymentId: String(p._id),
-      studentId: p.studentId?._id ? String(p.studentId._id) : String(p.studentId),
-      studentName:
-        p.studentId?.fullName ||
-        `${p.studentId?.firstName || ''} ${p.studentId?.lastName || ''}`.trim(),
-      amount: p.amount,
-      method: p.method,
-    }));
-  }
-
-  private static async findLowAttendance(schoolId: string) {
-    const since = new Date(Date.now() - 7 * 86400000);
-    const agg = await Attendance.aggregate([
-      { $match: { schoolId: new mongoose.Types.ObjectId(schoolId), date: { $gte: since } } },
-      {
-        $group: {
-          _id: '$studentId',
-          present: { $sum: { $cond: [{ $eq: ['$status', 'PRESENT'] }, 1, 0] } },
-          total: { $sum: 1 },
-        },
-      },
-      { $match: { total: { $gte: 3 } } },
-    ]);
-
-    return agg.map((row: any) => ({
-      studentId: String(row._id),
-      presentRate: row.total > 0 ? Math.round((row.present / row.total) * 100) : 0,
-      present: row.present,
-      total: row.total,
-    }));
-  }
-
-  private static async findRecentInvoices(schoolId: string) {
-    const since = new Date(Date.now() - 24 * 3600 * 1000);
-    const invoices = await Invoice.find({ schoolId, createdAt: { $gte: since } })
-      .populate('studentId', 'fullName firstName lastName')
-      .lean()
-      .exec();
-
-    return (invoices as any[]).map((inv) => ({
-      invoiceId: String(inv._id),
-      invoiceNumber: inv.invoiceNumber,
-      studentId: inv.studentId?._id ? String(inv.studentId._id) : String(inv.studentId),
-      studentName:
-        inv.studentId?.fullName ||
-        `${inv.studentId?.firstName || ''} ${inv.studentId?.lastName || ''}`.trim(),
-      total: inv.total,
-    }));
-  }
-
-  private static async dispatch(action: AutomationAction, row: any, schoolId: string) {
-    const type = String(action.type || '').toUpperCase();
-    if (type === 'SMS') {
-      if (!row.phone) return;
-      await safeQueueAdd(smsQueue, 'automation-sms', {
-        schoolId,
-        to: row.phone,
-        message: renderTemplate(action.config?.message || 'Reminder from school', row),
-      });
-    } else if (type === 'EMAIL') {
-      if (!row.email) return;
-      await safeQueueAdd(emailQueue, 'automation-email', {
-        schoolId,
-        to: row.email,
-        subject: action.config?.subject || 'SchoolFlow',
-        body: renderTemplate(action.config?.body || '', row),
-      });
-    } else if (type === 'IN-APP NOTIFICATION' || type === 'IN_APP') {
-      // Placeholder — the notification service can be wired here.
-      logger.debug(`In-app notification queued for ${row.studentName || row.studentId}`);
-    } else if (type === 'WEBHOOK') {
-      // Placeholder — an HTTP POST would fire here.
-      logger.debug(`Webhook would fire for ${row.studentId}`);
-    }
+    return result;
   }
 }
 
-function renderTemplate(template: string, data: any): string {
-  return String(template).replace(/\{\{(\w+)\}\}/g, (_, key) => {
-    const v = data[key];
-    return v === undefined || v === null ? '' : String(v);
-  });
+// =============================================================
+// Minimal JSON-Logic style evaluator
+// =============================================================
+// Supports the operators commonly used by SchoolFlow automations:
+//   ==, ===, !=, !==, >, >=, <, <=, and, or, not, in
+//   {"var": "path.to.field"}
+// Anything else evaluates to false so a malformed condition never
+// accidentally fires an action.
+
+function evaluateCondition(condition: string | undefined, payload: any): boolean {
+  if (!condition) return true; // no condition = always fire
+  let parsed: any;
+  try {
+    parsed = JSON.parse(condition);
+  } catch (_) {
+    return false;
+  }
+  return evalNode(parsed, payload);
+}
+
+function evalNode(node: any, data: any): boolean {
+  if (node == null) return false;
+  if (typeof node === 'boolean') return node;
+  if (typeof node !== 'object') return false;
+
+  if (Array.isArray(node)) {
+    const [op, ...args] = node;
+    const vals = args.map((a) => evalArg(a, data));
+
+    switch (op) {
+      case '==':  return vals[0] == vals[1];
+      case '===': return vals[0] === vals[1];
+      case '!=':  return vals[0] != vals[1];
+      case '!==': return vals[0] !== vals[1];
+      case '>':   return Number(vals[0]) > Number(vals[1]);
+      case '>=':  return Number(vals[0]) >= Number(vals[1]);
+      case '<':   return Number(vals[0]) < Number(vals[1]);
+      case '<=':  return Number(vals[0]) <= Number(vals[1]);
+      case 'and': return vals.every((v) => !!v);
+      case 'or':  return vals.some((v) => !!v);
+      case 'not': return !vals[0];
+      case 'in':  return Array.isArray(vals[1]) && vals[1].includes(vals[0]);
+      default:    return false;
+    }
+  }
+
+  // Object form: {"gte": [{"var":"x"}, 7]} or {"var": "x"}
+  if ('var' in node) return Boolean(evalArg(node, data));
+
+  for (const key of Object.keys(node)) {
+    const val = node[key];
+    if (Array.isArray(val)) {
+      return evalNode([opFromKey(key), ...val], data);
+    }
+    return false;
+  }
+  return false;
+}
+
+function evalArg(arg: any, data: any): any {
+  if (arg == null) return arg;
+  if (typeof arg !== 'object') return arg;
+  if (Array.isArray(arg)) return evalNode(arg, data);
+  if ('var' in arg) {
+    const path = String(arg.var).split('.');
+    let cur: any = data;
+    for (const p of path) {
+      if (cur == null) return undefined;
+      cur = cur[p];
+    }
+    return cur;
+  }
+  return arg;
+}
+
+function opFromKey(key: string): string {
+  const map: Record<string, string> = {
+    eq: '==', neq: '!=', gt: '>', gte: '>=', lt: '<', lte: '<=',
+    and: 'and', or: 'or', not: 'not', in: 'in',
+  };
+  return map[key] || key;
 }
