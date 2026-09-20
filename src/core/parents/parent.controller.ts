@@ -3,6 +3,7 @@ import { Request, Response, NextFunction } from 'express';
 import { ParentService } from './parent.service';
 
 export class ParentController {
+  // Primary handlers
   static async list(req: Request, res: Response, next: NextFunction) {
     try {
       const items = await ParentService.list(req.schoolId, req.query);
@@ -15,6 +16,15 @@ export class ParentController {
       const item = await ParentService.getById(req.schoolId, req.params.id);
       res.json({ success: true, data: item });
     } catch (err) { next(err); }
+  }
+
+  // Aliases — some route files reference these names.
+  static async getParents(req: Request, res: Response, next: NextFunction) {
+    return ParentController.list(req, res, next);
+  }
+
+  static async getParent(req: Request, res: Response, next: NextFunction) {
+    return ParentController.getById(req, res, next);
   }
 
   static async create(req: Request, res: Response, next: NextFunction) {
