@@ -1,4 +1,4 @@
-// src/core/reportCards/reportCard.service.ts (relevant methods)
+// src/core/reportCards/reportCard.service.ts
 import mongoose from 'mongoose';
 import { Student } from '../../models/Student';
 import { Class } from '../../models/Class';
@@ -9,27 +9,91 @@ import logger from '../../config/logger';
 import { BadRequestError, NotFoundError } from '../../middleware/error.middleware';
 
 export class ReportCardService {
-  // ... existing single-student generation and template methods ...
+  // ------------------------------------------------------------------
+  // Single-student generation (existing)
+  // ------------------------------------------------------------------
+  static async generateForStudent(
+    schoolId: string,
+    studentId: string,
+    sessionId: string,
+    termId: string
+  ) {
+    if (!mongoose.isValidObjectId(studentId)) {
+      throw new BadRequestError('Invalid student id');
+    }
 
-  /**
-   * Compile report cards for every student in a class.
-   *
-   * Batched:
-   *   1. One query for all students
-   *   2. One query for all results
-   *   3. One query for all subjects
-   *   4. One upsert per student
-   *
-   * No per-student round trips. Handles 500-student classes in a
-   * couple of seconds.
-   */
+    const student: any = await Student.findOne({ _id: studentId, schoolId })
+      .populate('classId', 'name')
+      .lean();
+    if (!student) throw new NotFoundError('Student not found');
+
+    const results = await Result.find({
+      schoolId,
+      studentId,
+      sessionId,
+      termId,
+    })
+      .populate('subjectId', 'name code')
+      .lean();
+
+    const subjects = results.map((r: any) => {
+      const total = (r.caScore || 0) + (r.examScore || 0);
+      return {
+        subjectId: r.subjectId?._id || r.subjectId,
+        name: r.subjectId?.name || r.subjectName || 'Subject',
+        ca: r.caScore || 0,
+        exam: r.examScore || 0,
+        total,
+        grade: r.grade || gradeFor(total),
+        remark: r.remark || '',
+      };
+    });
+
+    const average =
+      subjects.length > 0
+        ? Math.round(subjects.reduce((s, x) => s + x.total, 0) / subjects.length)
+        : 0;
+
+    const ReportCard = mongoose.model('ReportCard');
+    const card = await ReportCard.findOneAndUpdate(
+      { schoolId, studentId, sessionId, termId },
+      {
+        $set: {
+          schoolId,
+          studentId,
+          classId: student.classId?._id || student.classId,
+          sessionId,
+          termId,
+          studentName:
+            student.fullName ||
+            `${student.firstName || ''} ${student.lastName || ''}`.trim(),
+          className: student.classId?.name || '',
+          admissionNumber: student.admissionNumber || '',
+          subjects,
+          average,
+          grade: gradeFor(average),
+          remark: remarkFor(average),
+          compiledAt: new Date(),
+        },
+      },
+      { new: true, upsert: true }
+    );
+
+    return card;
+  }
+
+  // ------------------------------------------------------------------
+  // Class-wide compilation (batched)
+  // ------------------------------------------------------------------
   static async generateForClass(
     schoolId: string,
     classId: string,
     sessionId: string,
     termId: string
   ) {
-    if (!mongoose.isValidObjectId(classId)) throw new BadRequestError('Invalid class id');
+    if (!mongoose.isValidObjectId(classId)) {
+      throw new BadRequestError('Invalid class id');
+    }
 
     const [students, subjects] = await Promise.all([
       Student.find({ schoolId, classId, status: 'ACTIVE' })
@@ -44,7 +108,6 @@ export class ReportCardService {
 
     const studentIds = students.map((s: any) => s._id);
 
-    // One query for every result in this class/session/term.
     const results = await Result.find({
       schoolId,
       studentId: { $in: studentIds },
@@ -54,7 +117,6 @@ export class ReportCardService {
       .populate('subjectId', 'name code')
       .lean();
 
-    // Index results by student for O(1) lookups below.
     const resultsByStudent = new Map<string, any[]>();
     for (const r of results) {
       const sid = String((r as any).studentId?._id || (r as any).studentId);
@@ -72,8 +134,8 @@ export class ReportCardService {
       const subjectRows = studentResults.map((r: any) => {
         const total = (r.caScore || 0) + (r.examScore || 0);
         return {
-          subjectId: (r as any).subjectId?._id || (r as any).subjectId,
-          name: (r as any).subjectId?.name || r.subjectName || 'Subject',
+          subjectId: r.subjectId?._id || r.subjectId,
+          name: r.subjectId?.name || r.subjectName || 'Subject',
           ca: r.caScore || 0,
           exam: r.examScore || 0,
           total,
@@ -128,10 +190,9 @@ export class ReportCardService {
     };
   }
 
-  /**
-   * Compile report cards for every active class in the school.
-   * Delegates to generateForClass per class. Never per-student.
-   */
+  // ------------------------------------------------------------------
+  // School-wide compilation
+  // ------------------------------------------------------------------
   static async generateForSchool(
     schoolId: string,
     sessionId: string,
@@ -146,9 +207,6 @@ export class ReportCardService {
     const perClass: any[] = [];
     const errors: any[] = [];
 
-    // Sequential over classes (usually < 20). Each class batches its
-    // own students so the total DB round trips are classes + 3, not
-    // classes * students.
     for (const cls of classes) {
       try {
         const result = await ReportCardService.generateForClass(
@@ -183,8 +241,36 @@ export class ReportCardService {
       errors,
     };
   }
+
+  /**
+   * Called by report.worker.ts when a batch job runs. Accepts a
+   * schoolId plus optional session/term, and compiles for the whole
+   * school. Alias of generateForSchool with the same return shape.
+   */
+  static async processSchoolBatch(
+    schoolId: string,
+    sessionId: string,
+    termId: string
+  ) {
+    return ReportCardService.generateForSchool(schoolId, sessionId, termId);
+  }
+
+  /**
+   * Process a class batch — same idea for the worker's per-class job.
+   */
+  static async processClassBatch(
+    schoolId: string,
+    classId: string,
+    sessionId: string,
+    termId: string
+  ) {
+    return ReportCardService.generateForClass(schoolId, classId, sessionId, termId);
+  }
 }
 
+// ------------------------------------------------------------------
+// Grade/remark helpers
+// ------------------------------------------------------------------
 function gradeFor(total: number): string {
   if (total >= 75) return 'A';
   if (total >= 65) return 'B';
