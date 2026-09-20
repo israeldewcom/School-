@@ -8,17 +8,12 @@ import logger from '../../config/logger';
 import { BadRequestError, NotFoundError } from '../../middleware/error.middleware';
 
 export class StudentService {
-  /**
-   * Shape a raw student doc into the flat form the frontend expects.
-   * The status rule treats a student with no invoice as OUTSTANDING,
-   * not PAID — this was the reason new students showed as fully paid.
-   */
   private static shape(s: any, feeTotals?: { expected: number; paid: number }) {
     const primaryParent = Array.isArray(s.parentIds) ? s.parentIds[0] : null;
     const className = s.classId?.name || '—';
 
-    const expected = feeTotals?.expected ?? s.fees?.expected ?? 0;
-    const paid = feeTotals?.paid ?? s.fees?.paid ?? 0;
+    const expected = feeTotals?.expected ?? 0;
+    const paid = feeTotals?.paid ?? 0;
 
     const status =
       expected === 0
@@ -46,23 +41,33 @@ export class StudentService {
       classId: s.classId?._id ? String(s.classId._id) : (s.classId ? String(s.classId) : null),
       guardian: primaryParent
         ? `${primaryParent.firstName || ''} ${primaryParent.lastName || ''}`.trim()
-        : (s.guardian || ''),
-      guardianPhone: primaryParent?.phone || s.guardianPhone || '',
-      guardianEmail: primaryParent?.email || s.guardianEmail || '',
+        : '',
+      guardianPhone: primaryParent?.phone || '',
+      guardianEmail: primaryParent?.email || '',
       parentIds: (s.parentIds || []).map((p: any) => (p._id ? String(p._id) : String(p))),
       fees: { expected, paid, owed: Math.max(expected - paid, 0), status },
       createdAt: s.createdAt,
     };
   }
 
+  /**
+   * Sum expected/paid per student. Uses only non-cancelled invoices
+   * and approved payments. If the same student has multiple invoices
+   * for different sessions, they all count — that's correct.
+   */
   private static async feeTotalsForStudents(schoolId: string, studentIds: string[]) {
     const expectedByStudent = new Map<string, number>();
     const paidByStudent = new Map<string, number>();
 
+    if (studentIds.length === 0) return new Map<string, { expected: number; paid: number }>();
+
+    const objectIds = studentIds.map((id) => new mongoose.Types.ObjectId(id));
+
     try {
       const invoices = await Invoice.find({
         schoolId,
-        studentId: { $in: studentIds.map((id) => new mongoose.Types.ObjectId(id)) },
+        studentId: { $in: objectIds },
+        status: { $ne: 'CANCELLED' },
       })
         .select('studentId total')
         .lean();
@@ -71,13 +76,15 @@ export class StudentService {
         const sid = String(inv.studentId);
         expectedByStudent.set(sid, (expectedByStudent.get(sid) || 0) + (inv.total || 0));
       }
-    } catch (_) {}
+    } catch (err: any) {
+      logger.warn(`feeTotals: invoice query failed — ${err?.message}`);
+    }
 
     try {
       const payments = await Payment.find({
         schoolId,
-        studentId: { $in: studentIds.map((id) => new mongoose.Types.ObjectId(id)) },
-        status: { $in: ['CONFIRMED', 'APPROVED'] },
+        studentId: { $in: objectIds },
+        status: { $in: ['APPROVED', 'CONFIRMED'] },
       })
         .select('studentId amount')
         .lean();
@@ -86,7 +93,9 @@ export class StudentService {
         const sid = String(p.studentId);
         paidByStudent.set(sid, (paidByStudent.get(sid) || 0) + (p.amount || 0));
       }
-    } catch (_) {}
+    } catch (err: any) {
+      logger.warn(`feeTotals: payment query failed — ${err?.message}`);
+    }
 
     const result = new Map<string, { expected: number; paid: number }>();
     const allIds = new Set([...expectedByStudent.keys(), ...paidByStudent.keys()]);
@@ -112,9 +121,7 @@ export class StudentService {
       .lean();
 
     const ids = students.map((s: any) => String(s._id));
-    const feeMap = ids.length > 0
-      ? await StudentService.feeTotalsForStudents(schoolId, ids)
-      : new Map();
+    const feeMap = await StudentService.feeTotalsForStudents(schoolId, ids);
 
     return students.map((s: any) => StudentService.shape(s, feeMap.get(String(s._id))));
   }
@@ -130,7 +137,6 @@ export class StudentService {
       .populate('parentIds', 'firstName lastName phone email')
       .lean();
     if (!student) throw new NotFoundError('Student not found');
-
     const feeMap = await StudentService.feeTotalsForStudents(schoolId, [id]);
     return StudentService.shape(student, feeMap.get(id));
   }
@@ -175,28 +181,23 @@ export class StudentService {
       status: 'ACTIVE',
     };
 
-    if (data.dateOfBirth) {
-      payload.dateOfBirth = new Date(data.dateOfBirth);
-    }
-    if (data.photo) {
-      payload.photo = String(data.photo);
-    }
+    if (data.dateOfBirth) payload.dateOfBirth = new Date(data.dateOfBirth);
+    if (data.photo) payload.photo = String(data.photo);
 
     const student = new Student(payload);
     await student.save();
 
-    // Auto-generate the student's first invoice from the class's fee
-    // structure. Without this the student has expected=0 and their fee
-    // status is meaningless.
     await StudentService.autoInvoiceForStudent(schoolId, String(student._id), data.classId);
 
     return StudentService.getById(schoolId, String(student._id));
   }
 
   /**
-   * Generates an invoice for a newly-created student from their class's
-   * active fee structure. Non-fatal on failure — the invoice can be
-   * generated later from the Invoices page.
+   * Create the student's initial invoice from the class fee structure.
+   *
+   * Deduplication is strict: if any non-cancelled invoice already
+   * exists for this student + session + term, we skip. This prevents
+   * the 100x inflation bug where every save created a new invoice.
    */
   private static async autoInvoiceForStudent(
     schoolId: string,
@@ -220,10 +221,26 @@ export class StudentService {
         return;
       }
 
-      const existing = await Invoice.findOne({ schoolId, studentId, status: { $ne: 'CANCELLED' } });
-      if (existing) return; // already billed
+      // STRICT dedupe: any non-cancelled invoice with the same session
+      // and term means we've already billed this student.
+      const existing = await Invoice.findOne({
+        schoolId,
+        studentId,
+        sessionId: structure.sessionId,
+        termId: structure.termId,
+        status: { $ne: 'CANCELLED' },
+      });
+
+      if (existing) {
+        logger.info(
+          `autoInvoice: student ${studentId} already has invoice for session/term, skipping`
+        );
+        return;
+      }
 
       const seq = `${Date.now().toString(36).toUpperCase()}${Math.floor(Math.random() * 900 + 100)}`;
+      const totalAmount = Number(structure.totalAmount) || 0;
+
       await Invoice.create({
         schoolId,
         studentId,
@@ -231,18 +248,24 @@ export class StudentService {
         sessionId: structure.sessionId,
         termId: structure.termId,
         invoiceNumber: `INV-${seq}`,
-        total: structure.totalAmount || 0,
+        total: totalAmount,
         amountPaid: 0,
         status: 'ISSUED',
         dueDate: new Date(Date.now() + 30 * 86400000),
         items: (structure.feeItems || []).map((it: any) => ({
           description: it.description || it.name || 'Fee',
-          amount: it.amount || 0,
+          amount: Number(it.amount) || 0,
           categoryId: it.categoryId,
         })),
       });
-      logger.info(`Auto-invoiced student ${studentId} from structure ${structure._id}`);
+      logger.info(`Auto-invoiced student ${studentId} for ₦${(totalAmount / 100).toFixed(2)}`);
     } catch (err: any) {
+      // Duplicate key error means the invoice already exists — that's
+      // success, not failure.
+      if (err?.code === 11000) {
+        logger.info(`autoInvoice: student ${studentId} already invoiced (dup key)`);
+        return;
+      }
       logger.warn(`Auto-invoice failed for ${studentId}: ${err?.message}`);
     }
   }
@@ -270,16 +293,14 @@ export class StudentService {
     }
     if (data.gender !== undefined) student.gender = data.gender;
     if (data.dateOfBirth !== undefined) {
-      if (data.dateOfBirth) {
-        student.dateOfBirth = new Date(data.dateOfBirth);
-      } else {
-        student.set('dateOfBirth', undefined);
-      }
+      if (data.dateOfBirth) student.dateOfBirth = new Date(data.dateOfBirth);
+      else student.set('dateOfBirth', undefined);
     }
     if (data.address !== undefined) student.address = data.address;
     if (data.photo !== undefined) student.photo = data.photo || undefined;
 
-    // Merge parentIds: keep existing, add new, dedupe.
+    // Merge parentIds — add, don't replace. This is what makes the
+    // "guardian created with student" flow actually link.
     if (data.parentIds !== undefined && Array.isArray(data.parentIds)) {
       const existing = new Set((student.parentIds || []).map((p: any) => String(p)));
       for (const p of data.parentIds) {
