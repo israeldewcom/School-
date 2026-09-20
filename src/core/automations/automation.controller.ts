@@ -1,48 +1,76 @@
+// src/core/automations/automation.controller.ts
 import { Request, Response, NextFunction } from 'express';
 import { AutomationService } from './automation.service';
 
 export class AutomationController {
+  static async list(req: Request, res: Response, next: NextFunction) {
+    try {
+      const items = await AutomationService.getAll(req.schoolId, req.query);
+      res.json({ success: true, data: items });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async getById(req: Request, res: Response, next: NextFunction) {
+    try {
+      const item = await AutomationService.getById(req.schoolId, req.params.id);
+      res.json({ success: true, data: item });
+    } catch (err) {
+      next(err);
+    }
+  }
+
   static async create(req: Request, res: Response, next: NextFunction) {
     try {
-      const data = { ...req.body, schoolId: req.schoolId };
-      const auto = await AutomationService.create(data);
-      res.status(201).json({ success: true, data: auto });
-    } catch (error) { next(error); }
-  }
-
-  static async getAutomations(req: Request, res: Response, next: NextFunction) {
-    try {
-      const autos = await AutomationService.getAll(req.schoolId!, req.query);
-      res.json({ success: true, data: autos });
-    } catch (error) { next(error); }
-  }
-
-  static async getAutomation(req: Request, res: Response, next: NextFunction) {
-    try {
-      const auto = await AutomationService.getById(req.params.id, req.schoolId!);
-      res.json({ success: true, data: auto });
-    } catch (error) { next(error); }
+      const item = await AutomationService.create(req.schoolId, req.body);
+      res.status(201).json({ success: true, data: item });
+    } catch (err) {
+      next(err);
+    }
   }
 
   static async update(req: Request, res: Response, next: NextFunction) {
     try {
-      const auto = await AutomationService.update(req.params.id, req.schoolId!, req.body);
-      res.json({ success: true, data: auto });
-    } catch (error) { next(error); }
+      const item = await AutomationService.update(
+        req.schoolId,
+        req.params.id,
+        req.body
+      );
+      res.json({ success: true, data: item });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async toggle(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await AutomationService.toggle(req.schoolId, req.params.id);
+      res.json({ success: true, data: result });
+    } catch (err) {
+      next(err);
+    }
   }
 
   static async delete(req: Request, res: Response, next: NextFunction) {
     try {
-      await AutomationService.delete(req.params.id, req.schoolId!);
-      res.json({ success: true, message: 'Automation deleted' });
-    } catch (error) { next(error); }
+      const result = await AutomationService.delete(req.schoolId, req.params.id);
+      res.json({ success: true, data: result });
+    } catch (err) {
+      next(err);
+    }
   }
 
-  static async triggerManual(req: Request, res: Response, next: NextFunction) {
+  static async test(req: Request, res: Response, next: NextFunction) {
     try {
-      const { event, data } = req.body;
-      await AutomationService.triggerAutomation(event, { ...data, schoolId: req.schoolId });
-      res.json({ success: true, message: 'Automation triggered' });
-    } catch (error) { next(error); }
+      const result = await AutomationService.triggerAutomation(
+        req.schoolId,
+        req.params.id,
+        req.body || {}
+      );
+      res.json({ success: true, data: result });
+    } catch (err) {
+      next(err);
+    }
   }
 }
