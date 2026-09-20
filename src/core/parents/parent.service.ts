@@ -13,20 +13,20 @@ export class ParentService {
   private static async attachChildren(schoolId: string, parents: any[]) {
     if (parents.length === 0) return [];
 
-    const parentIds = parents.map((p) => new mongoose.Types.ObjectId(String(p._id)));
+    const parentIds = parents.map(
+      (p) => new mongoose.Types.ObjectId(String(p._id))
+    );
 
-    // Reverse lookup: find every active student whose parentIds array
-    // contains any of these parent ids.
     const students = await Student.find({
       schoolId,
       parentIds: { $in: parentIds },
       status: { $ne: 'DELETED' },
     })
       .populate('classId', 'name')
-      .lean();
+      .lean()
+      .exec();
 
-    // Fee balances — expected from invoices, paid from approved payments.
-    const studentIds = students.map((s: any) => s._id);
+    const studentIds = (students as any[]).map((s) => s._id);
     const expectedByStudent = new Map<string, number>();
     const paidByStudent = new Map<string, number>();
 
@@ -38,8 +38,9 @@ export class ParentService {
           status: { $ne: 'CANCELLED' },
         })
           .select('studentId total')
-          .lean();
-        for (const inv of invoices) {
+          .lean()
+          .exec();
+        for (const inv of invoices as any[]) {
           const sid = String(inv.studentId);
           expectedByStudent.set(sid, (expectedByStudent.get(sid) || 0) + (inv.total || 0));
         }
@@ -52,33 +53,33 @@ export class ParentService {
           status: { $in: ['APPROVED', 'CONFIRMED'] },
         })
           .select('studentId amount')
-          .lean();
-        for (const p of payments) {
+          .lean()
+          .exec();
+        for (const p of payments as any[]) {
           const sid = String(p.studentId);
           paidByStudent.set(sid, (paidByStudent.get(sid) || 0) + (p.amount || 0));
         }
       } catch (_) {}
     }
 
-    // Group students by parent id.
     const childrenByParent = new Map<string, any[]>();
-    for (const s of students) {
+    for (const s of students as any[]) {
       const childRecord = {
         id: String(s._id),
         fullName:
-          (s as any).fullName ||
-          `${(s as any).firstName || ''} ${(s as any).lastName || ''}`.trim() ||
+          s.fullName ||
+          `${s.firstName || ''} ${s.lastName || ''}`.trim() ||
           'Unnamed',
-        className: (s as any).classId?.name || '—',
-        classId: (s as any).classId?._id ? String((s as any).classId._id) : null,
-        admissionNumber: (s as any).admissionNumber || '',
+        className: s.classId?.name || '—',
+        classId: s.classId?._id ? String(s.classId._id) : null,
+        admissionNumber: s.admissionNumber || '',
         fees: {
           expected: expectedByStudent.get(String(s._id)) || 0,
           paid: paidByStudent.get(String(s._id)) || 0,
         },
       };
 
-      for (const pid of (s as any).parentIds || []) {
+      for (const pid of s.parentIds || []) {
         const key = String(pid);
         if (!childrenByParent.has(key)) childrenByParent.set(key, []);
         childrenByParent.get(key)!.push(childRecord);
@@ -115,17 +116,27 @@ export class ParentService {
     const filter: any = { schoolId };
     if (query.search) {
       const rx = new RegExp(String(query.search).trim(), 'i');
-      filter.$or = [{ firstName: rx }, { lastName: rx }, { phone: rx }, { email: rx }];
+      filter.$or = [
+        { firstName: rx },
+        { lastName: rx },
+        { phone: rx },
+        { email: rx },
+      ];
     }
-    const parents = await Parent.find(filter).sort({ createdAt: -1 }).lean();
-    return ParentService.attachChildren(schoolId, parents);
+    const parents = await Parent.find(filter)
+      .sort({ createdAt: -1 })
+      .lean()
+      .exec();
+    return ParentService.attachChildren(schoolId, parents as any[]);
   }
 
   static async getById(schoolId: string, id: string) {
-    if (!mongoose.isValidObjectId(id)) throw new BadRequestError('Invalid parent id');
-    const parent = await Parent.findOne({ _id: id, schoolId }).lean();
+    if (!mongoose.isValidObjectId(id)) {
+      throw new BadRequestError('Invalid parent id');
+    }
+    const parent = await Parent.findOne({ _id: id, schoolId }).lean().exec();
     if (!parent) throw new NotFoundError('Parent not found');
-    const enriched = await ParentService.attachChildren(schoolId, [parent]);
+    const enriched = await ParentService.attachChildren(schoolId, [parent as any]);
     return enriched[0];
   }
 
@@ -140,24 +151,40 @@ export class ParentService {
       throw new BadRequestError('Phone number is required');
     }
 
-    const parent = new Parent({
+    const firstName = String(data.firstName).trim();
+    const lastName = String(data.lastName).trim();
+    const fullName =
+      data.fullName && String(data.fullName).trim()
+        ? String(data.fullName).trim()
+        : `${firstName} ${lastName}`;
+
+    const payload: any = {
       schoolId,
-      firstName: String(data.firstName).trim(),
-      lastName: String(data.lastName).trim(),
-      fullName:
-        data.fullName ||
-        `${String(data.firstName).trim()} ${String(data.lastName).trim()}`,
+      firstName,
+      lastName,
+      fullName,
       phone: String(data.phone).trim(),
-      email: data.email ? String(data.email).trim().toLowerCase() : undefined,
-      relationship: data.relationship || 'Guardian',
-      address: data.address || undefined,
-    });
+      relationship: data.relationship ? String(data.relationship) : 'Guardian',
+    };
+
+    // Only set email when it's an actual non-empty string — assigning
+    // `undefined` to the schema field triggers TS2322 for optional fields.
+    if (data.email && String(data.email).trim()) {
+      payload.email = String(data.email).trim().toLowerCase();
+    }
+    if (data.address && String(data.address).trim()) {
+      payload.address = String(data.address).trim();
+    }
+
+    const parent = new Parent(payload);
     await parent.save();
     return ParentService.getById(schoolId, String(parent._id));
   }
 
   static async update(schoolId: string, id: string, data: any) {
-    if (!mongoose.isValidObjectId(id)) throw new BadRequestError('Invalid parent id');
+    if (!mongoose.isValidObjectId(id)) {
+      throw new BadRequestError('Invalid parent id');
+    }
     const parent = await Parent.findOne({ _id: id, schoolId });
     if (!parent) throw new NotFoundError('Parent not found');
 
@@ -167,9 +194,19 @@ export class ParentService {
       parent.fullName = `${parent.firstName || ''} ${parent.lastName || ''}`.trim();
     }
     if (data.phone !== undefined) parent.phone = String(data.phone).trim();
-    if (data.email !== undefined) parent.email = data.email ? String(data.email).trim() : undefined;
-    if (data.relationship !== undefined) parent.relationship = data.relationship;
-    if (data.address !== undefined) parent.address = data.address;
+    if (data.email !== undefined) {
+      if (data.email && String(data.email).trim()) {
+        parent.email = String(data.email).trim().toLowerCase();
+      } else {
+        parent.set('email', undefined);
+      }
+    }
+    if (data.relationship !== undefined) {
+      parent.relationship = String(data.relationship || 'Guardian');
+    }
+    if (data.address !== undefined) {
+      parent.address = data.address ? String(data.address).trim() : undefined;
+    }
 
     await parent.save();
     return ParentService.getById(schoolId, id);
