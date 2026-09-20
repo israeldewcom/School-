@@ -42,17 +42,12 @@ interface RenderData {
   principalRemark?: string;
 }
 
-const A4_WIDTH = 595.28;   // points
-const A4_HEIGHT = 841.89;  // points
+type Resolvable = string | number | null;
+
+const A4_WIDTH = 595.28;
+const A4_HEIGHT = 841.89;
 
 export class ReportCardRendererService {
-  /**
-   * Compose a report card PDF by overlaying the student's data onto
-   * the school's uploaded template image.
-   *
-   * Returns the PDF as a Buffer, ready to write to disk or stream to
-   * the browser.
-   */
   static async renderReportCard(
     schoolId: string,
     templateId: string,
@@ -75,9 +70,6 @@ export class ReportCardRendererService {
     return this.compose(template, data);
   }
 
-  /**
-   * Compose a receipt PDF from a receipt-type template.
-   */
   static async renderReceipt(
     schoolId: string,
     templateId: string,
@@ -107,8 +99,6 @@ export class ReportCardRendererService {
       throw new NotFoundError('Receipt template not found');
     }
 
-    // Receipts use the same composer — the pins just have different
-    // field names. We map receipt data into the RenderData shape.
     const renderData: RenderData = {
       student: {
         fullName: data.studentName,
@@ -121,8 +111,6 @@ export class ReportCardRendererService {
       results: [],
       average: 0,
       grade: '',
-      // Receipt-specific values stuffed into pins via custom fields.
-      // The composer reads from _receiptValues if present.
       ...({ _receiptValues: data } as any),
     };
 
@@ -141,17 +129,13 @@ export class ReportCardRendererService {
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-    // Decode the data URL into an image.
     const { imageBytes, isPng } = this.decodeDataUrl(template.imageData);
     const image = isPng
       ? await pdfDoc.embedPng(imageBytes)
       : await pdfDoc.embedJpg(imageBytes);
 
-    // Page geometry — always A4 portrait. If the template is landscape
-    // the image still fits inside the A4 box.
     const page = pdfDoc.addPage([A4_WIDTH, A4_HEIGHT]);
 
-    // Scale the image to fill the page, preserving aspect ratio.
     const imgAspect = image.width / image.height;
     const pageAspect = A4_WIDTH / A4_HEIGHT;
 
@@ -161,12 +145,10 @@ export class ReportCardRendererService {
     let offsetY = 0;
 
     if (imgAspect > pageAspect) {
-      // Image is wider than page — fit width, center vertically.
       drawWidth = A4_WIDTH;
       drawHeight = A4_WIDTH / imgAspect;
       offsetY = (A4_HEIGHT - drawHeight) / 2;
     } else {
-      // Image is taller than page — fit height, center horizontally.
       drawHeight = A4_HEIGHT;
       drawWidth = A4_HEIGHT * imgAspect;
       offsetX = (A4_WIDTH - drawWidth) / 2;
@@ -179,8 +161,6 @@ export class ReportCardRendererService {
       height: drawHeight,
     });
 
-    // The drawing area is the image's box on the page. Pin coordinates
-    // are % of the image, so we map through this box.
     const drawRect = {
       x: offsetX,
       y: offsetY,
@@ -188,7 +168,6 @@ export class ReportCardRendererService {
       height: drawHeight,
     };
 
-    // Draw each pinned field.
     for (const pin of template.pins || []) {
       try {
         const value = this.resolveField(pin, data, isReceipt);
@@ -199,7 +178,6 @@ export class ReportCardRendererService {
       }
     }
 
-    // Draw each subject table.
     for (const table of template.tables || []) {
       try {
         this.drawTable(page, font, drawRect, table, data.results || []);
@@ -213,74 +191,81 @@ export class ReportCardRendererService {
   }
 
   // ------------------------------------------------------------------
-  // Field resolution
+  // Field resolution — every branch returns Resolvable (never undefined)
   // ------------------------------------------------------------------
   private static resolveField(
     pin: any,
     data: RenderData,
     isReceipt: boolean
-  ): string | number | null {
+  ): Resolvable {
     const receiptValues: any = (data as any)._receiptValues || {};
+
+    // Helper: coerce anything to a Resolvable.
+    const coerce = (v: any): Resolvable => {
+      if (v === undefined || v === null || v === '') return null;
+      if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+      return String(v);
+    };
 
     switch (pin.field) {
       case 'student_name':
-        return isReceipt ? receiptValues.studentName : data.student?.fullName;
+        return coerce(isReceipt ? receiptValues.studentName : data.student?.fullName);
       case 'admission_number':
-        return data.student?.admissionNumber;
+        return coerce(data.student?.admissionNumber);
       case 'class_name':
-        return data.student?.className;
+        return coerce(data.student?.className);
       case 'session':
-        return data.session;
+        return coerce(data.session);
       case 'term':
-        return data.term;
+        return coerce(data.term);
       case 'date_of_birth':
-        return data.student?.dateOfBirth;
+        return coerce(data.student?.dateOfBirth);
       case 'gender':
-        return data.student?.gender;
+        return coerce(data.student?.gender);
       case 'age':
-        return data.student?.age;
+        return coerce(data.student?.age);
       case 'average':
-        return data.average ? `${data.average}%` : '';
+        return data.average ? coerce(`${data.average}%`) : null;
       case 'position':
-        return data.position ? `${data.position}${this.ordinal(data.position)}` : '';
+        return data.position ? coerce(`${data.position}${this.ordinal(data.position)}`) : null;
       case 'grade':
-        return data.grade;
+        return coerce(data.grade);
       case 'class_size':
-        return data.classSize;
+        return coerce(data.classSize);
       case 'teacher_remark':
-        return data.teacherRemark;
+        return coerce(data.teacherRemark);
       case 'principal_remark':
-        return data.principalRemark;
+        return coerce(data.principalRemark);
       case 'attendance_present':
-        return data.attendance?.present;
+        return coerce(data.attendance?.present);
       case 'attendance_absent':
-        return data.attendance?.absent;
+        return coerce(data.attendance?.absent);
       case 'attendance_total':
-        return data.attendance?.total;
+        return coerce(data.attendance?.total);
       case 'next_term_begins':
-        return data.nextTermBegins;
+        return coerce(data.nextTermBegins);
       case 'school_name':
-        return data.school?.name;
+        return coerce(data.school?.name);
       case 'custom_text':
-        return pin.customText;
+        return coerce(pin.customText);
 
       // Receipt-specific fields.
-      case 'receipt_no' as any:
-        return receiptValues.receiptNo;
-      case 'date' as any:
-        return receiptValues.date;
-      case 'amount' as any:
+      case 'receipt_no':
+        return coerce(receiptValues.receiptNo);
+      case 'date':
+        return coerce(receiptValues.date);
+      case 'amount':
         return receiptValues.amount
-          ? `₦${(receiptValues.amount / 100).toLocaleString('en-NG')}`
-          : '';
-      case 'amount_in_words' as any:
-        return receiptValues.amountInWords;
-      case 'method' as any:
-        return receiptValues.method;
-      case 'reference' as any:
-        return receiptValues.reference;
-      case 'cashier_name' as any:
-        return receiptValues.cashierName;
+          ? coerce(`₦${(receiptValues.amount / 100).toLocaleString('en-NG')}`)
+          : null;
+      case 'amount_in_words':
+        return coerce(receiptValues.amountInWords);
+      case 'method':
+        return coerce(receiptValues.method);
+      case 'reference':
+        return coerce(receiptValues.reference);
+      case 'cashier_name':
+        return coerce(receiptValues.cashierName);
 
       default:
         return null;
@@ -304,8 +289,6 @@ export class ReportCardRendererService {
     pin: any,
     text: string
   ) {
-    // Convert pin % coords to absolute PDF coords.
-    // PDF's origin is bottom-left, but our pin Y is from the top.
     const absX = rect.x + (pin.x / 100) * rect.width;
     const absYFromTop = (pin.y / 100) * rect.height;
     const absY = rect.y + rect.height - absYFromTop;
@@ -313,14 +296,12 @@ export class ReportCardRendererService {
     const fontSize = pin.size || 11;
     const chosenFont = pin.bold ? boldFont : font;
 
-    // Truncate if it would overflow maxWidth.
     let displayText = text;
     if (pin.maxWidth) {
       const maxAbsWidth = (pin.maxWidth / 100) * rect.width;
       displayText = this.truncateToWidth(text, chosenFont, fontSize, maxAbsWidth);
     }
 
-    // Adjust X for alignment.
     let textX = absX;
     if (pin.align === 'center') {
       const w = chosenFont.widthOfTextAtSize(displayText, fontSize);
@@ -373,7 +354,7 @@ export class ReportCardRendererService {
     const fontSize = table.fontSize || 10;
     const maxRows = Math.min(table.maxRows || 20, rows.length);
 
-    const colOffsets: number[] = (table.columnOffsets || []).map(
+    const colOffsets: number[] = ((table.columnOffsets || []) as number[]).map(
       (o: number) => (o / 100) * rect.width
     );
     const columns: string[] = table.columns || [];
