@@ -4,13 +4,6 @@ import { ReportCardTemplate } from '../../models/ReportCardTemplate';
 import { BadRequestError, NotFoundError } from '../../middleware/error.middleware';
 import logger from '../../config/logger';
 
-// ------------------------------------------------------------------
-// Validation constants
-// ------------------------------------------------------------------
-
-// Every field a pin can target. Kept in sync with the frontend's
-// TEMPLATE_FIELD_OPTIONS and with the field resolvers in
-// reportCardRenderer.service.ts.
 const VALID_REPORT_CARD_FIELDS = new Set([
   'student_name',
   'admission_number',
@@ -48,23 +41,12 @@ const VALID_RECEIPT_FIELDS = new Set([
 ]);
 
 const VALID_TEMPLATE_TYPES = new Set(['report_card', 'receipt', 'invoice']);
-const MAX_IMAGE_BYTES = 8 * 1024 * 1024; // 8 MB decoded
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
-// ------------------------------------------------------------------
-// Service
-// ------------------------------------------------------------------
 export class ReportCardTemplateService {
   // ------------------------------------------------------------------
   // Reads
   // ------------------------------------------------------------------
-
-  /**
-   * List templates for a school.
-   *
-   * By default the `imageData` blob is stripped — it can be several
-   * megabytes per template and the list view never displays it.
-   * Pass `includeImage: true` to keep it (used by edit modals).
-   */
   static async list(schoolId: string, query: any = {}) {
     const filter: any = { schoolId };
     if (query.type && VALID_TEMPLATE_TYPES.has(String(query.type))) {
@@ -76,11 +58,17 @@ export class ReportCardTemplateService {
 
     const includeImage = query.includeImage === 'true' || query.includeImage === true;
 
-    let q = ReportCardTemplate.find(filter).sort({ isDefault: -1, createdAt: -1 });
-    if (!includeImage) {
-      q = q.select('-imageData');
-    }
-    const templates = await q.lean();
+    // Explicitly type the lean result so TypeScript knows the shape.
+    // Casting the query avoids the "schoolId is optional" mismatch
+    // that arises from Mongoose's inferred lean type.
+    const templatesQuery = ReportCardTemplate.find(filter)
+      .sort({ isDefault: -1, createdAt: -1 });
+
+    const projected = includeImage
+      ? templatesQuery
+      : templatesQuery.select('-imageData');
+
+    const templates: any[] = await projected.lean().exec();
 
     return templates.map((t: any) => ({
       id: String(t._id),
@@ -91,7 +79,6 @@ export class ReportCardTemplateService {
       isActive: t.isActive,
       isDefault: t.isDefault,
       hasImage: !!t.imageData,
-      // Only present when includeImage=true.
       ...(includeImage ? { imageData: t.imageData } : {}),
       pins: t.pins || [],
       tables: t.tables || [],
@@ -100,39 +87,38 @@ export class ReportCardTemplateService {
     }));
   }
 
-  /**
-   * Get a single template, always including the image data (needed to
-   * edit and re-save the pins).
-   */
   static async getById(schoolId: string, id: string) {
     if (!mongoose.isValidObjectId(id)) {
       throw new BadRequestError('Invalid template id');
     }
-    const template = await ReportCardTemplate.findOne({ _id: id, schoolId }).lean();
+    const template: any = await ReportCardTemplate.findOne({
+      _id: id,
+      schoolId,
+    })
+      .lean()
+      .exec();
+
     if (!template) throw new NotFoundError('Template not found');
 
     return {
-      id: String((template as any)._id),
-      name: (template as any).name,
-      type: (template as any).type,
-      imageData: (template as any).imageData,
-      pins: (template as any).pins || [],
-      tables: (template as any).tables || [],
-      isActive: (template as any).isActive,
-      isDefault: (template as any).isDefault,
-      createdAt: (template as any).createdAt,
-      updatedAt: (template as any).updatedAt,
+      id: String(template._id),
+      name: template.name,
+      type: template.type,
+      imageData: template.imageData,
+      pins: template.pins || [],
+      tables: template.tables || [],
+      isActive: template.isActive,
+      isDefault: template.isDefault,
+      createdAt: template.createdAt,
+      updatedAt: template.updatedAt,
     };
   }
 
-  /**
-   * Get the active template for a type — used by the renderer when no
-   * explicit templateId is passed. Prefers the template marked default,
-   * falls back to the most recently created active one.
-   */
   static async getActiveForType(schoolId: string, type: string) {
     if (!VALID_TEMPLATE_TYPES.has(type)) {
-      throw new BadRequestError(`Template type must be one of: ${[...VALID_TEMPLATE_TYPES].join(', ')}`);
+      throw new BadRequestError(
+        `Template type must be one of: ${[...VALID_TEMPLATE_TYPES].join(', ')}`
+      );
     }
     const template = await ReportCardTemplate.findOne({
       schoolId,
@@ -145,9 +131,7 @@ export class ReportCardTemplateService {
   // ------------------------------------------------------------------
   // Create
   // ------------------------------------------------------------------
-
   static async create(schoolId: string, data: any) {
-    // --- Validate the top-level fields ---
     if (!data?.name || !String(data.name).trim()) {
       throw new BadRequestError('Template name is required');
     }
@@ -158,34 +142,32 @@ export class ReportCardTemplateService {
 
     const type = data.type ? String(data.type) : 'report_card';
     if (!VALID_TEMPLATE_TYPES.has(type)) {
-      throw new BadRequestError(`Template type must be one of: ${[...VALID_TEMPLATE_TYPES].join(', ')}`);
+      throw new BadRequestError(
+        `Template type must be one of: ${[...VALID_TEMPLATE_TYPES].join(', ')}`
+      );
     }
 
     if (!data?.imageData || typeof data.imageData !== 'string') {
       throw new BadRequestError('Template image is required');
     }
 
-    // --- Validate the image ---
     const imageCheck = ReportCardTemplateService.validateImage(data.imageData);
     if (!imageCheck.ok) {
       throw new BadRequestError(imageCheck.error!);
     }
 
-    // --- Validate pins ---
     const pins = Array.isArray(data.pins) ? data.pins : [];
     const pinCheck = ReportCardTemplateService.validatePins(pins, type);
     if (!pinCheck.ok) {
       throw new BadRequestError(pinCheck.error!);
     }
 
-    // --- Validate tables ---
     const tables = Array.isArray(data.tables) ? data.tables : [];
     const tableCheck = ReportCardTemplateService.validateTables(tables);
     if (!tableCheck.ok) {
       throw new BadRequestError(tableCheck.error!);
     }
 
-    // --- Prevent duplicate names within a type per school ---
     const existingByName = await ReportCardTemplate.findOne({
       schoolId,
       type,
@@ -197,7 +179,6 @@ export class ReportCardTemplateService {
       );
     }
 
-    // --- First template of its type is automatically the default ---
     const siblingCount = await ReportCardTemplate.countDocuments({ schoolId, type });
     const shouldBeDefault = data.isDefault === true || siblingCount === 0;
 
@@ -212,7 +193,6 @@ export class ReportCardTemplateService {
       isDefault: shouldBeDefault,
     });
 
-    // If this one is default, unset the flag on its siblings.
     if (shouldBeDefault) {
       await ReportCardTemplate.updateMany(
         { schoolId, type, _id: { $ne: doc._id } },
@@ -239,7 +219,6 @@ export class ReportCardTemplateService {
   // ------------------------------------------------------------------
   // Update
   // ------------------------------------------------------------------
-
   static async update(schoolId: string, id: string, data: any) {
     if (!mongoose.isValidObjectId(id)) {
       throw new BadRequestError('Invalid template id');
@@ -247,7 +226,6 @@ export class ReportCardTemplateService {
     const template = await ReportCardTemplate.findOne({ _id: id, schoolId });
     if (!template) throw new NotFoundError('Template not found');
 
-    // --- Name ---
     if (data.name !== undefined) {
       const name = String(data.name).trim();
       if (!name) throw new BadRequestError('Template name cannot be empty');
@@ -268,7 +246,6 @@ export class ReportCardTemplateService {
       }
     }
 
-    // --- Image (only if a new one is passed) ---
     if (data.imageData !== undefined) {
       const imageCheck = ReportCardTemplateService.validateImage(data.imageData);
       if (!imageCheck.ok) {
@@ -277,7 +254,6 @@ export class ReportCardTemplateService {
       template.imageData = data.imageData;
     }
 
-    // --- Pins ---
     if (data.pins !== undefined) {
       const pinCheck = ReportCardTemplateService.validatePins(
         Array.isArray(data.pins) ? data.pins : [],
@@ -289,7 +265,6 @@ export class ReportCardTemplateService {
       template.pins = pinCheck.normalized as any;
     }
 
-    // --- Tables ---
     if (data.tables !== undefined) {
       const tableCheck = ReportCardTemplateService.validateTables(
         Array.isArray(data.tables) ? data.tables : []
@@ -300,16 +275,13 @@ export class ReportCardTemplateService {
       template.tables = tableCheck.normalized as any;
     }
 
-    // --- Active flag ---
     if (data.isActive !== undefined) {
       template.isActive = !!data.isActive;
     }
 
-    // --- Default flag ---
     if (data.isDefault === true) {
       template.isDefault = true;
     } else if (data.isDefault === false && template.isDefault) {
-      // Allowing un-default only if another template exists to take over.
       const other = await ReportCardTemplate.findOne({
         schoolId,
         type: template.type,
@@ -326,7 +298,6 @@ export class ReportCardTemplateService {
 
     await template.save();
 
-    // If we just made this one default, unset the flag on siblings.
     if (template.isDefault) {
       await ReportCardTemplate.updateMany(
         {
@@ -358,7 +329,6 @@ export class ReportCardTemplateService {
   // ------------------------------------------------------------------
   // Delete
   // ------------------------------------------------------------------
-
   static async delete(schoolId: string, id: string) {
     if (!mongoose.isValidObjectId(id)) {
       throw new BadRequestError('Invalid template id');
@@ -372,8 +342,6 @@ export class ReportCardTemplateService {
 
     await ReportCardTemplate.findByIdAndDelete(id);
 
-    // If we just deleted the default, promote the newest remaining
-    // active template of the same type.
     if (wasDefault) {
       const next = await ReportCardTemplate.findOne({
         schoolId,
@@ -395,7 +363,6 @@ export class ReportCardTemplateService {
   // ------------------------------------------------------------------
   // Set default
   // ------------------------------------------------------------------
-
   static async setDefault(schoolId: string, id: string) {
     if (!mongoose.isValidObjectId(id)) {
       throw new BadRequestError('Invalid template id');
@@ -424,18 +391,22 @@ export class ReportCardTemplateService {
   }
 
   // ------------------------------------------------------------------
-  // Duplicate — handy for "clone this template and modify it"
+  // Duplicate
   // ------------------------------------------------------------------
-
   static async duplicate(schoolId: string, id: string, newName?: string) {
     if (!mongoose.isValidObjectId(id)) {
       throw new BadRequestError('Invalid template id');
     }
-    const source = await ReportCardTemplate.findOne({ _id: id, schoolId }).lean();
+    const source: any = await ReportCardTemplate.findOne({
+      _id: id,
+      schoolId,
+    })
+      .lean()
+      .exec();
     if (!source) throw new NotFoundError('Template not found');
 
-    // Ensure a unique name for the copy.
-    let baseName = (newName && String(newName).trim()) || `${(source as any).name} (copy)`;
+    let baseName =
+      (newName && String(newName).trim()) || `${source.name} (copy)`;
     if (baseName.length > 100) baseName = baseName.slice(0, 100);
 
     let finalName = baseName;
@@ -443,14 +414,13 @@ export class ReportCardTemplateService {
     while (
       await ReportCardTemplate.findOne({
         schoolId,
-        type: (source as any).type,
+        type: source.type,
         name: finalName,
       })
     ) {
       counter++;
       finalName = `${baseName} ${counter}`;
       if (counter > 50) {
-        // Give up on finding a unique name after 50 attempts.
         finalName = `${baseName} ${Date.now()}`;
         break;
       }
@@ -459,15 +429,15 @@ export class ReportCardTemplateService {
     const copy = await ReportCardTemplate.create({
       schoolId,
       name: finalName,
-      type: (source as any).type,
-      imageData: (source as any).imageData,
-      pins: (source as any).pins || [],
-      tables: (source as any).tables || [],
+      type: source.type,
+      imageData: source.imageData,
+      pins: source.pins || [],
+      tables: source.tables || [],
       isActive: true,
       isDefault: false,
     });
 
-    logger.info(`Template duplicated: "${(source as any).name}" → "${finalName}"`, {
+    logger.info(`Template duplicated: "${source.name}" → "${finalName}"`, {
       schoolId,
       templateId: String(copy._id),
     });
@@ -484,11 +454,6 @@ export class ReportCardTemplateService {
   // ==================================================================
   // Private validation helpers
   // ==================================================================
-
-  /**
-   * Validates a data URL image. Returns the decoded byte size and
-   * the detected format, or an error message.
-   */
   private static validateImage(dataUrl: string): {
     ok: boolean;
     error?: string;
@@ -508,7 +473,6 @@ export class ReportCardTemplateService {
     const format = match[1] === 'png' ? 'png' : 'jpeg';
     const base64 = match[2];
 
-    // Base64 length * 3/4 approximates the decoded byte count.
     const approxBytes = Math.ceil((base64.length * 3) / 4);
     if (approxBytes > MAX_IMAGE_BYTES) {
       const mb = (approxBytes / 1024 / 1024).toFixed(1);
@@ -523,15 +487,6 @@ export class ReportCardTemplateService {
     return { ok: true, bytes: approxBytes, format };
   }
 
-  /**
-   * Validates each pin:
-   *   - field is valid for the template type
-   *   - x and y are within 0-100
-   *   - custom_text pins have non-empty customText
-   *   - size is a sane number
-   *
-   * Returns the normalized pins array (clamped, defaults filled).
-   */
   private static validatePins(
     pins: any[],
     type: string
@@ -562,7 +517,11 @@ export class ReportCardTemplateService {
       const x = Number(raw.x);
       const y = Number(raw.y);
       if (!Number.isFinite(x) || !Number.isFinite(y)) {
-        return { ok: false, error: `Pin ${i + 1}: coordinates must be numbers`, normalized: [] };
+        return {
+          ok: false,
+          error: `Pin ${i + 1}: coordinates must be numbers`,
+          normalized: [],
+        };
       }
       if (x < 0 || x > 100 || y < 0 || y > 100) {
         return {
@@ -624,13 +583,6 @@ export class ReportCardTemplateService {
     return { ok: true, normalized };
   }
 
-  /**
-   * Validates each table:
-   *   - x, y within 0-100
-   *   - columnOffsets and columns lengths match
-   *   - rowHeight positive and <= 20
-   *   - maxRows a sane number
-   */
   private static validateTables(
     tables: any[]
   ): { ok: boolean; error?: string; normalized: any[] } {
@@ -665,9 +617,15 @@ export class ReportCardTemplateService {
         };
       }
 
-      const columns = Array.isArray(t.columns) ? t.columns.map(String) : [];
+      const columns: string[] = Array.isArray(t.columns)
+        ? t.columns.map((c: any) => String(c))
+        : [];
       if (columns.length === 0) {
-        return { ok: false, error: `Table ${i + 1}: at least one column is required`, normalized: [] };
+        return {
+          ok: false,
+          error: `Table ${i + 1}: at least one column is required`,
+          normalized: [],
+        };
       }
       for (const c of columns) {
         if (!validColumns.has(c)) {
@@ -679,8 +637,8 @@ export class ReportCardTemplateService {
         }
       }
 
-      const offsets = Array.isArray(t.columnOffsets)
-        ? t.columnOffsets.map(Number)
+      const offsets: number[] = Array.isArray(t.columnOffsets)
+        ? t.columnOffsets.map((o: any) => Number(o))
         : [];
       if (offsets.length !== columns.length) {
         return {
@@ -730,7 +688,7 @@ export class ReportCardTemplateService {
         x: Number(x.toFixed(2)),
         y: Number(y.toFixed(2)),
         columns,
-        columnOffsets: offsets.map((o) => Number(o.toFixed(2))),
+        columnOffsets: offsets.map((o: number) => Number(o.toFixed(2))),
         rowHeight: Number(rowHeight.toFixed(2)),
         fontSize,
         maxRows,
