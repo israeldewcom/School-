@@ -1,23 +1,26 @@
+// src/models/Invoice.ts
 import mongoose, { Schema, Document } from 'mongoose';
+
+export type InvoiceStatus = 'ISSUED' | 'PARTIALLY_PAID' | 'PAID' | 'CANCELLED';
+
+export interface IInvoiceItem {
+  description: string;
+  amount: number;
+  categoryId?: mongoose.Types.ObjectId;
+}
 
 export interface IInvoice extends Document {
   schoolId: mongoose.Types.ObjectId;
   studentId: mongoose.Types.ObjectId;
-  sessionId: mongoose.Types.ObjectId;
-  termId: mongoose.Types.ObjectId;
+  classId?: mongoose.Types.ObjectId;
+  sessionId?: mongoose.Types.ObjectId;
+  termId?: mongoose.Types.ObjectId;
   invoiceNumber: string;
-  items: Array<{
-    description: string;
-    amount: number; // kobo
-    categoryId?: mongoose.Types.ObjectId;
-  }>;
-  subtotal: number; // kobo
-  discount: number; // kobo
-  total: number; // kobo
-  amountPaid: number; // kobo
-  balance: number; // kobo
-  dueDate: Date;
-  status: 'DRAFT' | 'ISSUED' | 'PARTIALLY_PAID' | 'PAID' | 'OVERDUE' | 'CANCELLED';
+  total: number;
+  amountPaid: number;
+  status: InvoiceStatus;
+  dueDate?: Date;
+  items: IInvoiceItem[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -26,29 +29,44 @@ const InvoiceSchema = new Schema<IInvoice>(
   {
     schoolId: { type: Schema.Types.ObjectId, ref: 'School', required: true, index: true },
     studentId: { type: Schema.Types.ObjectId, ref: 'Student', required: true, index: true },
-    sessionId: { type: Schema.Types.ObjectId, ref: 'Session', required: true },
-    termId: { type: Schema.Types.ObjectId, ref: 'Term', required: true },
-    invoiceNumber: { type: String, required: true, unique: true },
+    classId: { type: Schema.Types.ObjectId, ref: 'Class', index: true },
+    sessionId: { type: Schema.Types.ObjectId, ref: 'Session' },
+    termId: { type: Schema.Types.ObjectId, ref: 'Term' },
+    invoiceNumber: { type: String, required: true },
+    total: { type: Number, required: true, min: 0 },
+    amountPaid: { type: Number, default: 0, min: 0 },
+    status: {
+      type: String,
+      enum: ['ISSUED', 'PARTIALLY_PAID', 'PAID', 'CANCELLED'],
+      default: 'ISSUED',
+      index: true,
+    },
+    dueDate: { type: Date },
     items: [
       {
-        description: { type: String, required: true },
-        amount: { type: Number, required: true },
+        description: { type: String },
+        amount: { type: Number },
         categoryId: { type: Schema.Types.ObjectId, ref: 'FeeCategory' },
       },
     ],
-    subtotal: { type: Number, required: true },
-    discount: { type: Number, default: 0 },
-    total: { type: Number, required: true },
-    amountPaid: { type: Number, default: 0 },
-    balance: { type: Number, required: true },
-    dueDate: { type: Date, required: true },
-    status: {
-      type: String,
-      enum: ['DRAFT', 'ISSUED', 'PARTIALLY_PAID', 'PAID', 'OVERDUE', 'CANCELLED'],
-      default: 'DRAFT',
-    },
   },
   { timestamps: true }
 );
+
+// One invoice per student per session per term. Prevents the duplicate
+// invoice bug that was inflating student fee totals by 100x.
+InvoiceSchema.index(
+  { schoolId: 1, studentId: 1, sessionId: 1, termId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      status: { $ne: 'CANCELLED' },
+      sessionId: { $exists: true },
+      termId: { $exists: true },
+    },
+  }
+);
+
+InvoiceSchema.index({ schoolId: 1, invoiceNumber: 1 }, { unique: true });
 
 export const Invoice = mongoose.model<IInvoice>('Invoice', InvoiceSchema);
