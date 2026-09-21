@@ -1,74 +1,59 @@
 // src/server.ts
-
-import './bootstrap';   // MUST be first. Registers mongoose plugins.
-
+import mongoose from 'mongoose';
 import app from './app';
+import config from './config/env';
 import logger from './config/logger';
-import { connectDB, disconnectDB } from './config/database';
-import { redis } from './config/redis';
-import { env } from './config/env';
-import { closeAllQueues } from './jobs/queues';
-import { startReconciliationJob } from './jobs/reconciliation.job';
-import { startExpiryJob } from './jobs/expiry.job';
-import { ensureDefaultPlans } from './scripts/ensure-default-plans';
-import { ensureDefaultPermissions } from './scripts/ensure-default-permissions';
+import { bootstrapAdmin } from './scripts/bootstrap-admin';
 
-const PORT = env.PORT;
+const PORT = Number(process.env.PORT) || 5000;
+const MONGODB_URI =
+  process.env.MONGODB_URI ||
+  (config as any).MONGODB_URI ||
+  'mongodb://127.0.0.1:27017/schoolflow';
 
-const startServer = () => {
-  const server = app.listen(PORT, () => {
-    logger.info(`SchoolFlow API running on port ${PORT}`);
-  });
+async function start() {
+  try {
+    // 1. Connect to MongoDB FIRST — bootstrap needs the DB.
+    await mongoose.connect(MONGODB_URI);
+    logger.info('✅ MongoDB connected');
 
-  (async () => {
-    try {
-      await connectDB();
-      logger.info('MongoDB connected successfully.');
-      await ensureDefaultPlans();
-      await ensureDefaultPermissions();
-    } catch (err) {
-      logger.error('MongoDB connection failed – retrying in 30s');
-      setTimeout(() => connectDB(), 30000);
-    }
-  })();
+    // 2. Bootstrap the platform admin. Idempotent; safe to run every
+    //    time the server boots.
+    await bootstrapAdmin();
 
-  (async () => {
-    try {
-      await redis.ping();
-      logger.info('Redis ready.');
-      await startReconciliationJob();
-      await startExpiryJob();
-    } catch (err) {
-      logger.warn('Redis not available – will retry in 30s');
-      const interval = setInterval(async () => {
-        try {
-          await redis.ping();
-          logger.info('Redis reconnected – starting jobs.');
-          await startReconciliationJob();
-          await startExpiryJob();
-          clearInterval(interval);
-        } catch (_) {}
-      }, 30000);
-    }
-  })();
-
-  const shutdown = async (signal: string) => {
-    logger.info(`${signal} received, shutting down gracefully`);
-    server.close(async () => {
-      logger.info('HTTP server closed');
-      await closeAllQueues().catch(() => {});
-      await redis.quit().catch(() => {});
-      await disconnectDB();
-      process.exit(0);
+    // 3. Start the HTTP server.
+    app.listen(PORT, () => {
+      logger.info(`🚀 SchoolFlow API listening on port ${PORT}`);
+      logger.info(`   Environment: ${process.env.NODE_ENV || 'development'}`);
+      logger.info(`   Health:      http://localhost:${PORT}/health`);
     });
-  };
+  } catch (err: any) {
+    logger.error(`❌ Failed to start server: ${err?.message}`, { stack: err?.stack });
+    process.exit(1);
+  }
+}
 
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
-};
+start();
 
-process.on('unhandledRejection', (err) => {
-  logger.error('Unhandled rejection:', err);
+// ------------------------------------------------------------------
+// Graceful shutdown
+// ------------------------------------------------------------------
+process.on('SIGTERM', async () => {
+  logger.info('SIGTERM received — closing gracefully');
+  try { await mongoose.connection.close(false); } catch (_) {}
+  process.exit(0);
 });
-
-startServer();
+process.on('SIGINT', async () => {
+  logger.info('SIGINT received — closing gracefully');
+  try { await mongoose.connection.close(false); } catch (_) {}
+  process.exit(0);
+});
+process.on('unhandledRejection', (reason: any) => {
+  logger.error('💥 UNHANDLED REJECTION', {
+    reason: reason instanceof Error ? reason.message : String(reason),
+    stack: reason instanceof Error ? reason.stack : undefined,
+  });
+});
+process.on('uncaughtException', (err: Error) => {
+  logger.error('💥 UNCAUGHT EXCEPTION', { message: err.message, stack: err.stack });
+});
