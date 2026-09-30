@@ -37,6 +37,18 @@ router.put(
 );
 
 router.post(
+  '/close-term',
+  requirePermission('school', 'write'),
+  SchoolController.closeTerm
+);
+
+router.post(
+  '/seed-sample',
+  requirePermission('school', 'write'),
+  SchoolController.seedSample
+);
+
+router.post(
   '/',
   requirePermission('school', 'write'),
   validate(createSchoolSchema),
