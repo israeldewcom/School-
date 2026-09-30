@@ -1,8 +1,38 @@
-// src/middleware/permission.middleware.ts
+  // src/middleware/permission.middleware.ts
 import { Request, Response, NextFunction } from 'express';
+
+// Convenience groups used by the newer modules below.
+const OWNERS = ['SUPER_ADMIN', 'SCHOOL_OWNER'];
+const ADMINS = [...OWNERS, 'ADMIN'];
+const TEACHING = ['FORM_TEACHER', 'SUBJECT_TEACHER'];
+const MANAGERS = ['MASTER_MANAGER', 'WORK_MANAGER'];
+const ALL_STAFF = [
+  ...ADMINS,
+  'HEAD_TEACHER',
+  ...TEACHING,
+  'BURSAR',
+  'HOSTEL_MANAGER',
+  ...MANAGERS,
+  'STAFF',
+];
+const EVERYONE = [...ALL_STAFF, 'PARENT', 'STUDENT'];
 
 export const PERMISSION_ROLES: Record<string, Record<string, string[]>> = {
   platform: { access: ['SUPER_ADMIN'] },
+
+  // Parent and student portal (read-only views of their own data)
+  portal: {
+    read: ['PARENT', 'STUDENT'],
+    pay:  ['PARENT'],
+  },
+
+  // In-app notifications: every signed-in user reads their own.
+  // (This resource was missing, so /notifications returned 403 for everyone
+  // except the super admin.)
+  notifications: {
+    read:  EVERYONE,
+    write: EVERYONE,
+  },
 
   subscriptions: {
     read:    ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN'],
@@ -23,12 +53,12 @@ export const PERMISSION_ROLES: Record<string, Record<string, string[]>> = {
   },
 
   classes: {
-    read:  ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'FORM_TEACHER', 'SUBJECT_TEACHER', 'BURSAR'],
+    read:  ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'FORM_TEACHER', 'SUBJECT_TEACHER', 'BURSAR', 'MASTER_MANAGER'],
     write: ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN'],
   },
 
   students: {
-    read:  ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'FORM_TEACHER', 'SUBJECT_TEACHER', 'BURSAR', 'PARENT'],
+    read:  ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'FORM_TEACHER', 'SUBJECT_TEACHER', 'BURSAR', 'MASTER_MANAGER', 'PARENT'],
     write: ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN'],
   },
   parents: {
@@ -36,7 +66,7 @@ export const PERMISSION_ROLES: Record<string, Record<string, string[]>> = {
     write: ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN'],
   },
   staff: {
-    read:  ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER'],
+    read:  ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'MASTER_MANAGER', 'WORK_MANAGER'],
     write: ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN'],
   },
 
@@ -67,8 +97,10 @@ export const PERMISSION_ROLES: Record<string, Record<string, string[]>> = {
     delete: ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN'],
   },
   results: {
-    read:  ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'FORM_TEACHER', 'SUBJECT_TEACHER', 'PARENT'],
-    write: ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'FORM_TEACHER', 'SUBJECT_TEACHER'],
+    read:    ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'FORM_TEACHER', 'SUBJECT_TEACHER', 'PARENT'],
+    write:   ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'FORM_TEACHER', 'SUBJECT_TEACHER'],
+    publish: ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'FORM_TEACHER'],
+    delete:  ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN'],
   },
   exams: {
     read:  ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'FORM_TEACHER', 'SUBJECT_TEACHER'],
@@ -79,13 +111,51 @@ export const PERMISSION_ROLES: Record<string, Record<string, string[]>> = {
     write: ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'FORM_TEACHER'],
   },
 
+  // Grading engine: scale configuration, class positions, term remarks.
+  grading: {
+    read:  [...ADMINS, 'HEAD_TEACHER', ...TEACHING],
+    write: [...ADMINS, 'HEAD_TEACHER'],
+  },
+  remarks: {
+    read:  [...ADMINS, 'HEAD_TEACHER', ...TEACHING],
+    write: [...ADMINS, 'HEAD_TEACHER', 'FORM_TEACHER'],
+  },
+
+  announcements: {
+    read:  ALL_STAFF,
+    write: [...ADMINS, 'HEAD_TEACHER', 'MASTER_MANAGER'],
+  },
+
+  timetable: {
+    read:  [...ADMINS, 'HEAD_TEACHER', ...TEACHING, 'MASTER_MANAGER'],
+    write: [...ADMINS, 'HEAD_TEACHER'],
+  },
+
+  admissions: {
+    read:   [...ADMINS, 'HEAD_TEACHER'],
+    write:  [...ADMINS, 'HEAD_TEACHER'],
+    enroll: [...ADMINS],
+  },
+
+  hostel: {
+    read:   [...ADMINS, 'HEAD_TEACHER', 'HOSTEL_MANAGER', 'MASTER_MANAGER'],
+    write:  [...ADMINS, 'HOSTEL_MANAGER'],
+    manage: [...ADMINS],
+  },
+
+  tasks: {
+    read:   ALL_STAFF,
+    write:  ALL_STAFF,
+    manage: [...ADMINS, 'HEAD_TEACHER', ...MANAGERS],
+  },
+
   communications: {
     read:  ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'BURSAR'],
     write: ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'BURSAR'],
   },
 
   analytics: {
-    read: ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'BURSAR'],
+    read: ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER', 'BURSAR', 'MASTER_MANAGER'],
   },
   documents: {
     read:  ['SUPER_ADMIN', 'SCHOOL_OWNER', 'ADMIN', 'HEAD_TEACHER'],
@@ -139,12 +209,12 @@ export function requirePermission(resource: string, action: string) {
  *
  * Base roles (SUPER_ADMIN, SCHOOL_OWNER) are always allowed. For
  * delegatable roles (BURSAR by default), the middleware reads the
- * user's delegation flag from the request-scoped user document —
+ * user's delegation flag from the request-scoped user document,
  * which the auth middleware just loaded fresh from the database on
- * this very request. That means if the proprietor revokes the
- * delegation, the bursar's very next request is denied.
+ * this very request. If the proprietor revokes the delegation, the
+ * bursar's very next request is denied.
  *
- * This is used by the payment approve and reject routes.
+ * Used by the payment approve and reject routes.
  */
 export function requireDelegatablePermission(
   resource: string,
