@@ -100,12 +100,39 @@ export async function getUserScope(req: Request): Promise<UserScope> {
       return { ...base, ownStudentIds: [], restricted: true };
     }
     try {
-      const children = await Student.find({ schoolId, parentIds: parentId })
+      const children = await Student.find({
+        schoolId,
+        parentIds: parentId,
+        status: { $ne: 'DELETED' },
+      })
         .select('_id')
         .lean();
       return {
         ...base,
         ownStudentIds: children.map((c) => String(c._id)),
+        restricted: true,
+      };
+    } catch (_) {
+      return { ...base, ownStudentIds: [], restricted: true };
+    }
+  }
+
+  if (role === 'STUDENT') {
+    const studentId = authUser.studentId ? String(authUser.studentId) : '';
+    if (!studentId || !mongoose.isValidObjectId(studentId)) {
+      return { ...base, ownStudentIds: [], restricted: true };
+    }
+    try {
+      const student = await Student.findOne({
+        _id: studentId,
+        schoolId,
+        status: { $ne: 'DELETED' },
+      })
+        .select('_id')
+        .lean();
+      return {
+        ...base,
+        ownStudentIds: student ? [String(student._id)] : [],
         restricted: true,
       };
     } catch (_) {
@@ -172,4 +199,4 @@ export async function assertStudentInScope(
     err.statusCode = 403;
     throw err;
   }
-}
+}  
