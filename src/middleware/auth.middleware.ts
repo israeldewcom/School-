@@ -4,10 +4,7 @@ import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
 import { User } from '../models/User';
 import logger from '../config/logger';
-
-function accessSecret(): string {
-  return process.env.JWT_SECRET || 'change-me-in-env';
-}
+import { getAccessSecret } from '../config/jwt';
 
 /**
  * Authentication middleware.
@@ -17,8 +14,8 @@ function accessSecret(): string {
  * used. Attaches the full user document to req.user plus the derived
  * fields (userId, userRole, schoolId) that downstream services read.
  *
- * Never assumes a field exists. Any missing field results in a clean
- * 401/403, not a 500.
+ * Refresh tokens are rejected here so a long-lived refresh token can
+ * never be used as an access token.
  */
 export async function authMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
@@ -36,7 +33,7 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
 
     let payload: any;
     try {
-      payload = jwt.verify(token, accessSecret());
+      payload = jwt.verify(token, getAccessSecret());
     } catch (err: any) {
       const msg = err?.name === 'TokenExpiredError'
         ? 'Token expired'
@@ -45,7 +42,11 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
       return;
     }
 
-    // Extract the user id from any of the three conventions.
+    if (payload?.type === 'refresh') {
+      res.status(401).json({ success: false, message: 'Invalid authentication token' });
+      return;
+    }
+
     const userId = payload?.sub || payload?.id || payload?.userId;
     if (!userId || !mongoose.isValidObjectId(userId)) {
       res.status(401).json({ success: false, message: 'Malformed token' });
@@ -65,10 +66,6 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
       return;
     }
 
-    // Attach everything downstream code might read. The full user doc
-    // is present for services that need fields like formClassId or
-    // subjectIds, and the individual convenience fields are present so
-    // no service has to dig through req.user to find them.
     (req as any).user = user;
     (req as any).userId = String((user as any)._id);
     (req as any).userRole = (user as any).role;
@@ -90,8 +87,6 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
 export async function requireSchoolMembership(req: Request, res: Response, next: NextFunction): Promise<void> {
   const role = (req as any).userRole;
   if (role === 'SUPER_ADMIN') {
-    // Super admin has no school context but can hit platform routes
-    // which are mounted separately. If they reach here, deny.
     res.status(403).json({ success: false, message: 'No school membership' });
     return;
   }
@@ -104,8 +99,7 @@ export async function requireSchoolMembership(req: Request, res: Response, next:
 
 /**
  * Same shape as requireSchoolMembership — kept as a separate export so
- * existing imports don't break. In this codebase the two middlewares
- * do the same job.
+ * existing imports don't break.
  */
 export async function requireSchoolContext(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (!(req as any).schoolId) {
@@ -117,8 +111,7 @@ export async function requireSchoolContext(req: Request, res: Response, next: Ne
 
 /**
  * Optional middleware — attaches the user to req if a valid token is
- * present, but never blocks the request. Useful for endpoints that
- * behave differently for logged-in vs anonymous callers.
+ * present, but never blocks the request.
  */
 export async function optionalAuth(req: Request, _res: Response, next: NextFunction): Promise<void> {
   try {
@@ -130,10 +123,12 @@ export async function optionalAuth(req: Request, _res: Response, next: NextFunct
 
     let payload: any;
     try {
-      payload = jwt.verify(token, accessSecret());
+      payload = jwt.verify(token, getAccessSecret());
     } catch (_) {
       return next();
     }
+
+    if (payload?.type === 'refresh') return next();
 
     const userId = payload?.sub || payload?.id || payload?.userId;
     if (!userId || !mongoose.isValidObjectId(userId)) return next();
