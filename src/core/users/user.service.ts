@@ -1,4 +1,4 @@
-    // src/core/users/user.service.ts
+// src/core/users/user.service.ts
 import mongoose from 'mongoose';
 import { User } from '../../models/User';
 import { Staff } from '../../models/Staff';
@@ -12,10 +12,13 @@ import logger from '../../config/logger';
 
 const CREATABLE_ROLES = [
   'ADMIN',
+  'MASTER_MANAGER',
+  'WORK_MANAGER',
   'HEAD_TEACHER',
   'FORM_TEACHER',
   'SUBJECT_TEACHER',
   'BURSAR',
+  'HOSTEL_MANAGER',
   'PARENT',
   'STUDENT',
   'STAFF',
@@ -166,6 +169,9 @@ export class UserService {
       }
       case 'BURSAR':
       case 'ADMIN':
+      case 'MASTER_MANAGER':
+      case 'WORK_MANAGER':
+      case 'HOSTEL_MANAGER':
       case 'HEAD_TEACHER':
       case 'STAFF': {
         if (data.staffId && mongoose.isValidObjectId(data.staffId)) {
@@ -283,8 +289,7 @@ export class UserService {
    *
    * Only the proprietor (or super admin) can call this. The change
    * takes effect on the bursar's next request because the auth
-   * middleware reloads the user document on every call — no cache
-   * invalidation needed.
+   * middleware reloads the user document on every call.
    */
   static async setApprovalDelegation(
     schoolId: string,
