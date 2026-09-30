@@ -1,8 +1,9 @@
-// src/core/users/user.service.ts
+    // src/core/users/user.service.ts
 import mongoose from 'mongoose';
 import { User } from '../../models/User';
 import { Staff } from '../../models/Staff';
 import { Parent } from '../../models/Parent';
+import { Student } from '../../models/Student';
 import { Class } from '../../models/Class';
 import { Subject } from '../../models/Subject';
 import { AuditLog } from '../../models/AuditLog';
@@ -16,6 +17,7 @@ const CREATABLE_ROLES = [
   'SUBJECT_TEACHER',
   'BURSAR',
   'PARENT',
+  'STUDENT',
   'STAFF',
 ];
 
@@ -28,6 +30,7 @@ export class UserService {
     const users = await User.find(filter)
       .populate('staffId', 'firstName lastName')
       .populate('parentId', 'firstName lastName phone')
+      .populate('studentId', 'firstName lastName admissionNumber')
       .populate('formClassId', 'name')
       .populate('subjectIds', 'name')
       .sort({ createdAt: -1 })
@@ -48,6 +51,10 @@ export class UserService {
       parentId: u.parentId?._id ? String(u.parentId._id) : null,
       parentName: u.parentId
         ? `${u.parentId.firstName || ''} ${u.parentId.lastName || ''}`.trim()
+        : null,
+      studentId: u.studentId?._id ? String(u.studentId._id) : null,
+      studentName: u.studentId
+        ? `${u.studentId.firstName || ''} ${u.studentId.lastName || ''}`.trim()
         : null,
       formClassId: u.formClassId?._id ? String(u.formClassId._id) : null,
       formClassName: u.formClassId?.name || null,
@@ -146,6 +153,17 @@ export class UserService {
         payload.parentId = data.parentId;
         break;
       }
+      case 'STUDENT': {
+        if (!data.studentId || !mongoose.isValidObjectId(data.studentId)) {
+          throw new BadRequestError('A student login must be linked to a student record.');
+        }
+        const student = await Student.findOne({ _id: data.studentId, schoolId });
+        if (!student) throw new BadRequestError('Student record not found.');
+        const taken = await User.findOne({ schoolId, studentId: data.studentId });
+        if (taken) throw new BadRequestError('That student already has a login.');
+        payload.studentId = data.studentId;
+        break;
+      }
       case 'BURSAR':
       case 'ADMIN':
       case 'HEAD_TEACHER':
@@ -214,6 +232,7 @@ export class UserService {
       user.set('formClassId', undefined);
       user.set('subjectIds', []);
       user.set('parentId', undefined);
+      user.set('studentId', undefined);
       user.role = data.role;
 
       // If the role changes away from BURSAR, drop any delegation.
@@ -236,6 +255,19 @@ export class UserService {
       const found = await Subject.find({ _id: { $in: ids }, schoolId }).select('_id').lean();
       if (found.length !== ids.length) throw new BadRequestError('One or more subjects invalid');
       user.subjectIds = ids;
+    }
+
+    if (data.studentId !== undefined) {
+      if (!mongoose.isValidObjectId(data.studentId)) throw new BadRequestError('Invalid student id');
+      const student = await Student.findOne({ _id: data.studentId, schoolId });
+      if (!student) throw new BadRequestError('Student record not found');
+      const taken = await User.findOne({ schoolId, studentId: data.studentId, _id: { $ne: id } });
+      if (taken) throw new BadRequestError('That student already has a login.');
+      user.studentId = data.studentId;
+    }
+
+    if (user.role === 'STUDENT' && !user.studentId) {
+      throw new BadRequestError('A student login must be linked to a student record.');
     }
 
     if (data.password && String(data.password).length >= 6) {
