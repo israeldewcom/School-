@@ -7,6 +7,11 @@ import { createStudentSchema, updateStudentSchema } from './student.validator';
 const router = express.Router();
 
 router.get('/', requirePermission('students', 'read'), StudentController.getStudents);
+
+// Static paths BEFORE /:id
+router.post('/bulk', requirePermission('students', 'write'), StudentController.bulkImport);
+router.post('/promote', requirePermission('students', 'write'), StudentController.promote);
+
 router.get('/:id', requirePermission('students', 'read'), StudentController.getStudent);
 router.post('/', requirePermission('students', 'write'), validate(createStudentSchema), StudentController.create);
 router.put('/:id', requirePermission('students', 'write'), validate(updateStudentSchema), StudentController.update);
