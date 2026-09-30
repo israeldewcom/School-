@@ -1,4 +1,4 @@
-    // src/models/User.ts
+// src/models/User.ts
 import mongoose, { Schema, Document } from 'mongoose';
 import argon2 from 'argon2';
 
@@ -6,10 +6,13 @@ export type UserRole =
   | 'SUPER_ADMIN'
   | 'SCHOOL_OWNER'
   | 'ADMIN'
+  | 'MASTER_MANAGER'
+  | 'WORK_MANAGER'
   | 'HEAD_TEACHER'
   | 'FORM_TEACHER'
   | 'SUBJECT_TEACHER'
   | 'BURSAR'
+  | 'HOSTEL_MANAGER'
   | 'PARENT'
   | 'STUDENT'
   | 'STAFF';
@@ -18,10 +21,13 @@ export const USER_ROLES: UserRole[] = [
   'SUPER_ADMIN',
   'SCHOOL_OWNER',
   'ADMIN',
+  'MASTER_MANAGER',
+  'WORK_MANAGER',
   'HEAD_TEACHER',
   'FORM_TEACHER',
   'SUBJECT_TEACHER',
   'BURSAR',
+  'HOSTEL_MANAGER',
   'PARENT',
   'STUDENT',
   'STAFF',
@@ -55,14 +61,9 @@ export interface IUser extends Document {
   formClassId?: mongoose.Types.ObjectId;
   subjectIds: mongoose.Types.ObjectId[];
 
-  // ------------------------------------------------------------------
-  // Delegated payment approval
-  //
-  // Only meaningful for BURSAR. When true, the bursar can approve and
-  // reject payments exactly like the proprietor. The proprietor can
-  // flip this at any time — the change takes effect on the next
-  // request because the auth middleware reloads the user document.
-  // ------------------------------------------------------------------
+  // Delegated payment approval (BURSAR only). The proprietor can flip
+  // this at any time; it takes effect on the next request because the
+  // auth middleware reloads the user on every call.
   canApprovePayments: boolean;
   canApprovePaymentsSetBy?: mongoose.Types.ObjectId;
   canApprovePaymentsSetAt?: Date;
