@@ -1,19 +1,11 @@
-// src/core/subscriptions/subscription.routes.ts
 import express from 'express';
-import { SubscriptionController } from './subscription.controller';
+import { CommunicationController } from './communication.controller';
 import { requirePermission } from '../../middleware/permission.middleware';
 
 const router = express.Router();
 
-router.get('/current', requirePermission('subscriptions', 'read'), SubscriptionController.getCurrent);
-router.get('/plans', SubscriptionController.listPlans);
-router.get('/trial-status', requirePermission('subscriptions', 'read'), SubscriptionController.trialStatus);
-
-router.post('/renew', requirePermission('subscriptions', 'renew'), SubscriptionController.renew);
-router.post('/subscribe', requirePermission('subscriptions', 'write'), SubscriptionController.subscribe);
-
-// SMS credits are added without payment verification, so only the platform
-// super admin may credit a school until a Paystack-verified purchase flow exists.
-router.post('/sms/topup', requirePermission('subscriptions', 'approve'), SubscriptionController.topupSms);
+router.get('/messages', requirePermission('communications', 'read'), CommunicationController.getMessages);
+router.post('/messages', requirePermission('communications', 'write'), CommunicationController.sendMessage);
+router.post('/sms-to-parent', requirePermission('communications', 'write'), CommunicationController.sendParentSMS);
 
 export default router;
