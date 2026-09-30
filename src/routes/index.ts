@@ -1,4 +1,4 @@
-// src/routes/index.ts
+  // src/routes/index.ts
 import express from 'express';
 import authRoutes from '../core/auth/auth.routes';
 import schoolRoutes from '../core/schools/school.routes';
@@ -27,6 +27,7 @@ import staffRoutes from '../core/staff/staff.routes';
 import examRoutes from '../core/exams/exam.routes';
 import defaultersRoutes from '../core/defaulters/defaulters.routes';
 import userRoutes from '../core/users/user.routes';
+import portalRoutes from '../core/portal/portal.routes';
 import { SchoolController } from '../core/schools/school.controller';
 import {
   authMiddleware,
@@ -54,7 +55,8 @@ router.use(requireSchoolContext);
 router.use(requireActiveSubscription);
 
 router.use('/schools', schoolRoutes);
-router.use('/users', userRoutes);                               // ← new
+router.use('/users', userRoutes);
+router.use('/portal', portalRoutes);                            // parent + student portal
 router.use('/students', checkEntitlement('students'), studentRoutes);
 router.use('/parents', parentRoutes);
 router.use('/classes', classRoutes);
