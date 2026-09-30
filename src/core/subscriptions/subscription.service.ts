@@ -7,6 +7,7 @@ import { SmsPurchase } from '../../models/SmsPurchase';
 import { Payment } from '../../models/Payment';
 import { AuditLog } from '../../models/AuditLog';
 import { BadRequestError, NotFoundError } from '../../middleware/error.middleware';
+import { invalidateSubscriptionCache } from '../../middleware/subscription.middleware';
 import logger from '../../config/logger';
 
 const SMS_NAIRA_PER_CREDIT = 20;
@@ -94,6 +95,112 @@ export class SubscriptionService {
     await newSub.save();
     logger.info(`Subscription created for school ${schoolId}`);
     return { submitted: true, created: true };
+  }
+
+  // ------------------------------------------------------------------
+  // Super-admin renewal review
+  // ------------------------------------------------------------------
+  static async listPendingRenewals() {
+    const subs: any[] = await Subscription.find({ 'pendingRenewal.reference': { $exists: true } })
+      .populate('schoolId', 'name')
+      .sort({ 'pendingRenewal.submittedAt': 1 })
+      .lean();
+    const plans: any[] = await SubscriptionPlan.find({}).lean();
+
+    return subs.map((s) => {
+      const pr = s.pendingRenewal;
+      const plan = plans.find(
+        (p) => String(p.name).toLowerCase() === String(pr.planName || '').toLowerCase()
+      );
+      return {
+        id: String(s._id),
+        _id: String(s._id),
+        schoolId: s.schoolId ? { id: String(s.schoolId._id), name: s.schoolId.name } : null,
+        plan: pr.planName || null,
+        amount: plan ? plan.price : s.priceAtPurchase || 0,
+        reference: pr.reference,
+        proofUrl: pr.proof || null,
+        submittedAt: pr.submittedAt,
+      };
+    });
+  }
+
+  static async approveRenewal(subscriptionId: string, actorId: string) {
+    if (!mongoose.isValidObjectId(subscriptionId)) throw new BadRequestError('Invalid renewal id');
+    const sub: any = await Subscription.findById(subscriptionId);
+    if (!sub || !sub.pendingRenewal) throw new NotFoundError('No pending renewal found');
+
+    const pr = sub.pendingRenewal;
+    const plans: any[] = await SubscriptionPlan.find({}).lean();
+    const plan = plans.find(
+      (p) => String(p.name).toLowerCase() === String(pr.planName || '').toLowerCase()
+    );
+
+    const CYCLE_DAYS: Record<string, number> = { MONTHLY: 30, TERMLY: 90, ANNUAL: 365 };
+    const cycle = plan?.billingCycle || sub.billingCycleAtPurchase || 'TERMLY';
+    const days = CYCLE_DAYS[cycle] || 90;
+
+    const now = new Date();
+    const base = sub.endDate && sub.endDate > now ? sub.endDate : now;
+    sub.endDate = new Date(base.getTime() + days * 86400000);
+    if (plan) {
+      sub.planId = plan._id;
+      sub.priceAtPurchase = plan.price;
+    }
+    sub.billingCycleAtPurchase = cycle;
+    sub.durationDaysAtPurchase = days;
+    sub.status = 'ACTIVE';
+    sub.isTrial = false;
+    sub.trialEndDate = undefined;
+    sub.renewalHistory.push({
+      reference: pr.reference,
+      planName: pr.planName || null,
+      submittedAt: pr.submittedAt,
+      decision: 'APPROVED',
+      decidedAt: now,
+      decidedBy: actorId,
+      daysAdded: days,
+    });
+    sub.pendingRenewal = undefined;
+    await sub.save();
+    await invalidateSubscriptionCache(String(sub.schoolId));
+
+    await AuditLog.create({
+      actor: actorId,
+      action: 'subscription.renewal.approved',
+      resource: 'Subscription',
+      resourceId: sub._id,
+      after: { reference: pr.reference, daysAdded: days, newEndDate: sub.endDate },
+    });
+    return { approved: true, endDate: sub.endDate, daysAdded: days };
+  }
+
+  static async rejectRenewal(subscriptionId: string, actorId: string, reason?: string) {
+    if (!mongoose.isValidObjectId(subscriptionId)) throw new BadRequestError('Invalid renewal id');
+    const sub: any = await Subscription.findById(subscriptionId);
+    if (!sub || !sub.pendingRenewal) throw new NotFoundError('No pending renewal found');
+
+    const pr = sub.pendingRenewal;
+    sub.renewalHistory.push({
+      reference: pr.reference,
+      planName: pr.planName || null,
+      submittedAt: pr.submittedAt,
+      decision: 'REJECTED',
+      decidedAt: new Date(),
+      decidedBy: actorId,
+      reason: reason || 'No reason provided',
+    });
+    sub.pendingRenewal = undefined;
+    await sub.save();
+
+    await AuditLog.create({
+      actor: actorId,
+      action: 'subscription.renewal.rejected',
+      resource: 'Subscription',
+      resourceId: sub._id,
+      after: { reference: pr.reference, reason },
+    });
+    return { rejected: true };
   }
 
   // ------------------------------------------------------------------
