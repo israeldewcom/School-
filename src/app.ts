@@ -1,4 +1,4 @@
-// src/app.ts
+   // src/app.ts
 import express, { Application, Request, Response } from 'express';
 import mongoose from 'mongoose';
 import cors from 'cors';
@@ -21,7 +21,7 @@ import { errorHandler, notFoundHandler } from './middleware/error.middleware';
 const config: any = (envConfig as any).config || envConfig;
 const NODE_ENV: string = process.env.NODE_ENV || config.NODE_ENV || 'development';
 const CORS_ORIGINS: string = process.env.CORS_ORIGINS || config.CORS_ORIGINS || '*';
-const APP_VERSION: string = process.env.APP_VERSION || config.APP_VERSION || '3.4.0';
+const APP_VERSION: string = process.env.APP_VERSION || config.APP_VERSION || '4.0.0';
 
 const app: Application = express();
 
@@ -76,7 +76,23 @@ app.use(
 // ============================================================
 // Note: cookie-parser is intentionally NOT used. Auth is via Bearer
 // tokens in the Authorization header, so no cookies are needed.
-app.use(express.json({ limit: '5mb' }));
+//
+// FIX: the Paystack webhook verifies an HMAC over the RAW request body.
+// rawBodyMiddleware was never mounted and express.json() consumes the
+// stream, so req.rawBody was always undefined and every webhook was
+// rejected with "Missing body". Capture the raw bytes here, for
+// webhook routes only.
+app.use(
+  express.json({
+    limit: '5mb',
+    verify: (req: any, _res: any, buf: Buffer) => {
+      const url: string = req.originalUrl || req.url || '';
+      if (url.startsWith('/api/v1/webhooks')) {
+        req.rawBody = buf.toString('utf8');
+      }
+    },
+  })
+);
 app.use(express.urlencoded({ extended: true, limit: '5mb' }));
 
 // ============================================================
