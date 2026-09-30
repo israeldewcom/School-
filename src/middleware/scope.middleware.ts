@@ -1,4 +1,4 @@
-// src/middleware/scope.middleware.ts
+ // src/middleware/scope.middleware.ts
 import mongoose from 'mongoose';
 import { Request } from 'express';
 import { Student } from '../models/Student';
@@ -54,6 +54,13 @@ export async function getUserScope(req: Request): Promise<UserScope> {
   }
 
   if (role === 'BURSAR') {
+    return { ...base, unrestricted: true, restricted: false };
+  }
+
+  // Master manager has school-wide oversight. What they may actually do
+  // is still decided by the permission matrix (mostly read access plus
+  // task and announcement management).
+  if (role === 'MASTER_MANAGER') {
     return { ...base, unrestricted: true, restricted: false };
   }
 
@@ -140,6 +147,9 @@ export async function getUserScope(req: Request): Promise<UserScope> {
     }
   }
 
+  // WORK_MANAGER, HOSTEL_MANAGER, STAFF: no class or student scope.
+  // Hostel managers get their data through the hostel module, which
+  // restricts to the hostels they manage.
   return { ...base, classIds: [], subjectIds: [], restricted: true };
 }
 
@@ -199,4 +209,4 @@ export async function assertStudentInScope(
     err.statusCode = 403;
     throw err;
   }
-}  
+} 
