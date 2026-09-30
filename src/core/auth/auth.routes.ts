@@ -1,4 +1,4 @@
-// src/core/auth/auth.routes.ts
+   // src/core/auth/auth.routes.ts
 import express from 'express';
 import { AuthController } from './auth.controller';
 import { authMiddleware } from '../../middleware/auth.middleware';
@@ -10,6 +10,8 @@ router.post('/refresh', AuthController.refresh);
 router.post('/logout', AuthController.logout);
 router.post('/register-first', AuthController.registerFirst);
 router.post('/forgot-password', AuthController.forgotPassword);
+// Alias: the current frontend calls /auth/forgot
+router.post('/forgot', AuthController.forgotPassword);
 
 // Routes below require authentication.
 router.post('/logout-all', authMiddleware, AuthController.logoutAll);
