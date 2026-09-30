@@ -1,4 +1,4 @@
-// src/models/User.ts
+    // src/models/User.ts
 import mongoose, { Schema, Document } from 'mongoose';
 import argon2 from 'argon2';
 
@@ -11,6 +11,7 @@ export type UserRole =
   | 'SUBJECT_TEACHER'
   | 'BURSAR'
   | 'PARENT'
+  | 'STUDENT'
   | 'STAFF';
 
 export const USER_ROLES: UserRole[] = [
@@ -22,6 +23,7 @@ export const USER_ROLES: UserRole[] = [
   'SUBJECT_TEACHER',
   'BURSAR',
   'PARENT',
+  'STUDENT',
   'STAFF',
 ];
 
@@ -49,6 +51,7 @@ export interface IUser extends Document {
 
   staffId?: mongoose.Types.ObjectId;
   parentId?: mongoose.Types.ObjectId;
+  studentId?: mongoose.Types.ObjectId;
   formClassId?: mongoose.Types.ObjectId;
   subjectIds: mongoose.Types.ObjectId[];
 
@@ -59,9 +62,6 @@ export interface IUser extends Document {
   // reject payments exactly like the proprietor. The proprietor can
   // flip this at any time — the change takes effect on the next
   // request because the auth middleware reloads the user document.
-  //
-  // Tracked separately with audit fields so we know who granted it
-  // and when.
   // ------------------------------------------------------------------
   canApprovePayments: boolean;
   canApprovePaymentsSetBy?: mongoose.Types.ObjectId;
@@ -96,6 +96,7 @@ const UserSchema = new Schema<IUser>(
 
     staffId: { type: Schema.Types.ObjectId, ref: 'Staff' },
     parentId: { type: Schema.Types.ObjectId, ref: 'Parent' },
+    studentId: { type: Schema.Types.ObjectId, ref: 'Student' },
     formClassId: { type: Schema.Types.ObjectId, ref: 'Class' },
     subjectIds: [{ type: Schema.Types.ObjectId, ref: 'Subject' }],
 
@@ -125,6 +126,7 @@ UserSchema.index(
 UserSchema.index({ schoolId: 1, role: 1 });
 UserSchema.index({ schoolId: 1, formClassId: 1 });
 UserSchema.index({ schoolId: 1, parentId: 1 });
+UserSchema.index({ schoolId: 1, studentId: 1 });
 
 UserSchema.pre('save', function (next) {
   try {
