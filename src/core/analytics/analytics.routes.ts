@@ -11,6 +11,13 @@ router.get('/stats', requirePermission('analytics', 'read'), async (req, res, ne
   } catch (error) { next(error); }
 });
 
+router.get('/weekly-summary', requirePermission('analytics', 'read'), async (req, res, next) => {
+  try {
+    const data = await AnalyticsService.getWeeklySummary(req.schoolId!);
+    res.json({ success: true, data });
+  } catch (error) { next(error); }
+});
+
 router.get('/daily-collection', requirePermission('analytics', 'read'), async (req, res, next) => {
   try {
     const days = req.query.days ? parseInt(req.query.days as string, 10) : 14;
