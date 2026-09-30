@@ -77,6 +77,26 @@ export class SchoolController {
   }
 
   // ------------------------------------------------------------------
+  // CLOSE TERM — advances First -> Second -> Third Term
+  // ------------------------------------------------------------------
+  static async closeTerm(req: Request, res: Response, next: NextFunction) {
+    try {
+      const data = await SchoolService.closeTerm(req.schoolId!, req.userId!);
+      res.json({ success: true, data });
+    } catch (error) { next(error); }
+  }
+
+  // ------------------------------------------------------------------
+  // SEED SAMPLE DATA — demo students/invoices/payments/attendance
+  // ------------------------------------------------------------------
+  static async seedSample(req: Request, res: Response, next: NextFunction) {
+    try {
+      const data = await SchoolService.seedSampleData(req.schoolId!);
+      res.json({ success: true, data });
+    } catch (error) { next(error); }
+  }
+
+  // ------------------------------------------------------------------
   // ONBOARDING (public, no authentication)
   // ------------------------------------------------------------------
   static async onboard(req: Request, res: Response) {
