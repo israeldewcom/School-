@@ -1,3 +1,4 @@
+   import mongoose from 'mongoose';
 import { Message } from '../../models/Message';
 import { Notification } from '../../models/Notification';
 import { Parent } from '../../models/Parent';
@@ -10,21 +11,66 @@ export class CommunicationService {
   // BULK / GENERIC MESSAGING
   // ============================================================
   static async sendMessage(data: any) {
-    const message = new Message(data);
-    message.status = 'SENT';
-    await message.save();
+    const schoolId = String(data?.schoolId || '');
+    if (!schoolId) throw new BadRequestError('School context is required');
 
-    const recipients = await User.find({ _id: { $in: data.recipients || [] } });
+    const type = String(data?.type || '').toUpperCase();
 
+    // Only recipients that belong to THIS school are ever contacted.
+    const requested: string[] = Array.isArray(data?.recipients)
+      ? data.recipients.filter((id: any) => mongoose.isValidObjectId(String(id))).map(String)
+      : [];
+
+    const recipients = await User.find({
+      _id: { $in: requested },
+      schoolId,
+      isActive: true,
+    }).select('email phone');
+
+    if (recipients.length === 0) {
+      throw new BadRequestError('No valid recipients were found in your school.');
+    }
+
+    let queued = 0;
     for (const recipient of recipients) {
-      if (data.type === 'EMAIL' && recipient.email) {
-        await safeQueueAdd(emailQueue, 'send-email', {
-          to: recipient.email,
-          subject: data.subject,
-          html: data.body,
-        });
+      if (type === 'EMAIL') {
+        const email = recipient.email;
+        // Skip the placeholder addresses generated for users without email.
+        if (email && !email.endsWith('.local')) {
+          await safeQueueAdd(emailQueue, 'send-email', {
+            to: email,
+            subject: data.subject,
+            html: data.body,
+          });
+          queued += 1;
+        }
+      } else if (type === 'SMS') {
+        if (recipient.phone) {
+          await safeQueueAdd(smsQueue, 'send-sms', {
+            schoolId,
+            to: recipient.phone,
+            message: data.body,
+          });
+          queued += 1;
+        }
       }
     }
+
+    if ((type === 'EMAIL' || type === 'SMS') && queued === 0) {
+      throw new BadRequestError(
+        type === 'EMAIL'
+          ? 'None of the selected recipients have an email address on file.'
+          : 'None of the selected recipients have a phone number on file.'
+      );
+    }
+
+    const message = new Message({
+      ...data,
+      schoolId,
+      recipients: recipients.map((r) => r._id),
+    });
+    message.status = 'SENT';
+    await message.save();
 
     return message;
   }
