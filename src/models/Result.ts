@@ -1,4 +1,4 @@
-import mongoose, { Schema, Document } from 'mongoose';
+  import mongoose, { Schema, Document } from 'mongoose';
 
 export interface IResult extends Document {
   schoolId: mongoose.Types.ObjectId;
@@ -12,6 +12,9 @@ export interface IResult extends Document {
   total: number;
   grade: string;
   remark: string;
+  published: boolean;
+  publishedAt?: Date;
+  publishedBy?: mongoose.Types.ObjectId;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -29,10 +32,17 @@ const ResultSchema = new Schema<IResult>(
     total: { type: Number, required: true },
     grade: { type: String, required: true },
     remark: { type: String, required: true },
+
+    // Results are hidden from parents and students until published.
+    published: { type: Boolean, default: false, index: true },
+    publishedAt: { type: Date },
+    publishedBy: { type: Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }
 );
 
 ResultSchema.index({ studentId: 1, subjectId: 1, termId: 1, sessionId: 1 }, { unique: true });
+ResultSchema.index({ schoolId: 1, classId: 1, termId: 1, sessionId: 1 });
+ResultSchema.index({ schoolId: 1, studentId: 1, published: 1 });
 
 export const Result = mongoose.model<IResult>('Result', ResultSchema);
