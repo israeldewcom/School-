@@ -1,32 +1,24 @@
-// src/core/auth/auth.service.ts
+     // src/core/auth/auth.service.ts
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import argon2 from 'argon2';
 import jwt, { SignOptions } from 'jsonwebtoken';
 import { User } from '../../models/User';
 import { AuditLog } from '../../models/AuditLog';
-import * as envConfig from '../../config/env';
 import logger from '../../config/logger';
+import { getAccessSecret, getRefreshSecret } from '../../config/jwt';
 import { BadRequestError, NotFoundError } from '../../middleware/error.middleware';
-
-const config: any = (envConfig as any).default || envConfig;
 
 const ACCESS_TOKEN_TTL = '15m';
 const REFRESH_TOKEN_TTL = '90d';
 const ABSOLUTE_SESSION_DAYS = 0;
 
 function accessSecret(): string {
-  return process.env.JWT_SECRET || config.JWT_SECRET || 'change-me-in-env';
+  return getAccessSecret();
 }
 
 function refreshSecret(): string {
-  return (
-    process.env.JWT_REFRESH_SECRET ||
-    config.JWT_REFRESH_SECRET ||
-    process.env.JWT_SECRET ||
-    config.JWT_SECRET ||
-    'change-me-in-env'
-  );
+  return getRefreshSecret();
 }
 
 async function verifyPassword(stored: string, candidate: string): Promise<boolean> {
@@ -55,9 +47,7 @@ function isLegacyHash(stored: string): boolean {
 //
 // The access token includes `sub`, `id`, and `userId` (all pointing
 // at the same value) so any middleware reading any of the three
-// conventions gets the right user id. This is deliberately redundant —
-// it costs 40 bytes per token and eliminates an entire class of
-// "user id is undefined" bugs.
+// conventions gets the right user id.
 // ------------------------------------------------------------------
 function signAccessToken(user: any): string {
   const options: SignOptions = { expiresIn: ACCESS_TOKEN_TTL as any };
@@ -71,6 +61,7 @@ function signAccessToken(user: any): string {
       name: user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim(),
       formClassId: user.formClassId ? String(user.formClassId) : undefined,
       parentId: user.parentId ? String(user.parentId) : undefined,
+      studentId: user.studentId ? String(user.studentId) : undefined,
     },
     accessSecret(),
     options
@@ -103,6 +94,7 @@ function serializeUser(user: any) {
     formClassId: user.formClassId ? String(user.formClassId) : null,
     subjectIds: (user.subjectIds || []).map((s: any) => String(s)),
     parentId: user.parentId ? String(user.parentId) : null,
+    studentId: user.studentId ? String(user.studentId) : null,
     sessionStartedAt: (user as any).sessionStartedAt
       ? new Date((user as any).sessionStartedAt).toISOString()
       : null,
