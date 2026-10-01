@@ -21,7 +21,19 @@ export type TemplateField =
   | 'attendance_total'
   | 'next_term_begins'
   | 'school_name'
-  | 'custom_text';
+  | 'custom_text'
+  // Receipt-only fields
+  | 'receipt_no'
+  | 'date'
+  | 'amount'
+  | 'amount_in_words'
+  | 'method'
+  | 'reference'
+  | 'cashier_name'
+  | 'invoice_total'
+  | 'amount_paid_to_date'
+  | 'balance'
+  | 'payment_status';
 
 export interface ITemplatePin {
   field: TemplateField;
