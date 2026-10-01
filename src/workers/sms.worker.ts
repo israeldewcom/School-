@@ -3,7 +3,7 @@ import { redisForBullMQ } from '../config/redis';
 import { sendSMS } from '../integrations/sms/termii';
 import logger from '../config/logger';
 
-const worker = new Worker('schoolflow_sms', async (job) => {
+const worker = new Worker('sms', async (job) => {
   const { schoolId, to, message, senderId } = job.data;
 
   // Guard: jobs queued by older code may not carry schoolId. Skip them
