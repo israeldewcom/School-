@@ -38,3 +38,5 @@ export * from './HostelRoom';
 export * from './HostelAllocation';
 export * from './HostelRollCall';
 export * from './Task';
+export * from './SchoolSite';
+export * from './Assignment';
