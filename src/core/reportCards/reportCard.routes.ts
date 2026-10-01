@@ -22,6 +22,20 @@ router.post(
   ReportCardController.generateSchool
 );
 
+// Release a class's cards to parents (optionally withholding students who owe fees)
+router.post(
+  '/publish-class',
+  requirePermission('reportCards', 'write'),
+  ReportCardController.publishClass
+);
+
+// One merged PDF for the whole class
+router.get(
+  '/render-class/:classId',
+  requirePermission('reportCards', 'read'),
+  ReportCardController.renderClassPdf
+);
+
 // Render PDF on the uploaded template
 router.get(
   '/render/:studentId',
