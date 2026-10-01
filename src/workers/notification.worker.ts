@@ -1,8 +1,8 @@
-import { Worker } from 'bullmq';
+  import { Worker } from 'bullmq';
 import { redisForBullMQ } from '../config/redis';
 import logger from '../config/logger';
 
-const worker = new Worker('schoolflow_notifications', async (job) => {
+const worker = new Worker('notification', async (job) => {
   logger.info('Sending notification:', job.data);
 }, {
   connection: redisForBullMQ,
