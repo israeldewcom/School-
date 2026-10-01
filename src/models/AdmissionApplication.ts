@@ -33,6 +33,7 @@ export interface IAdmissionApplication extends Document {
     dateOfBirth?: Date;
     previousSchool?: string;
     address?: string;
+    photo?: string;
   };
   classAppliedId?: mongoose.Types.ObjectId;
   classAppliedName?: string;
@@ -45,6 +46,11 @@ export interface IAdmissionApplication extends Document {
     address?: string;
   };
   source: 'ONLINE' | 'OFFICE';
+  // Answers to any custom questions the school added to its admission form.
+  answers?: Record<string, any>;
+  siteSlug?: string;
+  parentId?: mongoose.Types.ObjectId;
+  enrolledAt?: Date;
   interview?: { date?: Date; location?: string; notes?: string };
   decision?: { reason?: string; by?: mongoose.Types.ObjectId; at?: Date };
   notes: Array<{ text: string; by?: mongoose.Types.ObjectId; byName?: string; at: Date }>;
@@ -68,6 +74,7 @@ const AdmissionApplicationSchema = new Schema<IAdmissionApplication>(
       dateOfBirth: { type: Date },
       previousSchool: { type: String, trim: true },
       address: { type: String, trim: true },
+      photo: { type: String },
     },
     classAppliedId: { type: Schema.Types.ObjectId, ref: 'Class' },
     classAppliedName: { type: String, trim: true },
@@ -80,6 +87,10 @@ const AdmissionApplicationSchema = new Schema<IAdmissionApplication>(
       address: { type: String, trim: true },
     },
     source: { type: String, enum: ['ONLINE', 'OFFICE'], default: 'ONLINE' },
+    answers: { type: Schema.Types.Mixed },
+    siteSlug: { type: String, trim: true, lowercase: true },
+    parentId: { type: Schema.Types.ObjectId, ref: 'Parent' },
+    enrolledAt: { type: Date },
     interview: {
       date: { type: Date },
       location: { type: String, trim: true },
