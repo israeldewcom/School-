@@ -4,6 +4,7 @@ import app from './app';
 import * as envConfig from './config/env';
 import logger from './config/logger';
 import { bootstrapAdmin } from './scripts/bootstrap-admin';
+import { scheduleRepeatingJobs } from './jobs/scheduler';
 
 // Normalize the env module — supports both `export default {}` and
 // named exports. Same pattern used in auth.service.ts.
@@ -30,6 +31,13 @@ async function start() {
       logger.info(`   Environment: ${process.env.NODE_ENV || 'development'}`);
       logger.info(`   Health:      http://localhost:${PORT}/health`);
     });
+
+    // 4. Background workers + repeating jobs. Set RUN_WORKERS=false on a web
+    //    dyno if you run workers in a separate process.
+    if (process.env.RUN_WORKERS !== 'false') {
+      await import('./workers');
+      await scheduleRepeatingJobs();
+    }
   } catch (err: any) {
     logger.error(`❌ Failed to start server: ${err?.message}`, { stack: err?.stack });
     process.exit(1);
