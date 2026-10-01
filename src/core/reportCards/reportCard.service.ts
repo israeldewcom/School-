@@ -7,6 +7,8 @@ import { Subject } from '../../models/Subject';
 import { ReportCardTemplate } from '../../models/ReportCardTemplate';
 import logger from '../../config/logger';
 import { BadRequestError, NotFoundError } from '../../middleware/error.middleware';
+import { ReportCard } from '../../models/ReportCard';
+import { ReportCardBatchService } from './reportCardBatch.service';
 
 export class ReportCardService {
   // ------------------------------------------------------------------
@@ -21,178 +23,28 @@ export class ReportCardService {
     if (!mongoose.isValidObjectId(studentId)) {
       throw new BadRequestError('Invalid student id');
     }
-
-    const student: any = await Student.findOne({ _id: studentId, schoolId })
-      .populate('classId', 'name')
-      .lean();
+    const student: any = await Student.findOne({ _id: studentId, schoolId }).select('classId').lean();
     if (!student) throw new NotFoundError('Student not found');
-
-    const results = await Result.find({
-      schoolId,
-      studentId,
-      sessionId,
-      termId,
-    })
-      .populate('subjectId', 'name code')
-      .lean();
-
-    const subjects = results.map((r: any) => {
-      const total = (r.caScore || 0) + (r.examScore || 0);
-      return {
-        subjectId: r.subjectId?._id || r.subjectId,
-        name: r.subjectId?.name || r.subjectName || 'Subject',
-        ca: r.caScore || 0,
-        exam: r.examScore || 0,
-        total,
-        grade: r.grade || gradeFor(total),
-        remark: r.remark || '',
-      };
-    });
-
-    const average =
-      subjects.length > 0
-        ? Math.round(subjects.reduce((s, x) => s + x.total, 0) / subjects.length)
-        : 0;
-
-    const ReportCard = mongoose.model('ReportCard');
-    const card = await ReportCard.findOneAndUpdate(
-      { schoolId, studentId, sessionId, termId },
-      {
-        $set: {
-          schoolId,
-          studentId,
-          classId: student.classId?._id || student.classId,
-          sessionId,
-          termId,
-          studentName:
-            student.fullName ||
-            `${student.firstName || ''} ${student.lastName || ''}`.trim(),
-          className: student.classId?.name || '',
-          admissionNumber: student.admissionNumber || '',
-          subjects,
-          average,
-          grade: gradeFor(average),
-          remark: remarkFor(average),
-          compiledAt: new Date(),
-        },
-      },
-      { new: true, upsert: true }
-    );
-
+    // Compile the whole class so position and class average are right.
+    await ReportCardBatchService.compileClass(schoolId, String(student.classId), sessionId, termId);
+    const card = await ReportCard.findOne({ schoolId, studentId, sessionId, termId }).lean();
+    if (!card) throw new NotFoundError('Report card not found');
     return card;
   }
 
-  // ------------------------------------------------------------------
-  // Class-wide compilation (batched)
-  // ------------------------------------------------------------------
   static async generateForClass(
     schoolId: string,
     classId: string,
     sessionId: string,
-    termId: string
+    termId: string,
+    opts: { nextTermBegins?: string } = {}
   ) {
     if (!mongoose.isValidObjectId(classId)) {
       throw new BadRequestError('Invalid class id');
     }
-
-    const [students, subjects] = await Promise.all([
-      Student.find({ schoolId, classId, status: 'ACTIVE' })
-        .select('_id firstName lastName fullName admissionNumber')
-        .lean(),
-      Subject.find({ schoolId, isActive: true }).select('_id name code classIds').lean(),
-    ]);
-
-    if (students.length === 0) {
-      return { count: 0, students: 0, message: 'No active students in this class' };
-    }
-
-    const studentIds = students.map((s: any) => s._id);
-
-    const results = await Result.find({
-      schoolId,
-      studentId: { $in: studentIds },
-      sessionId,
-      termId,
-    })
-      .populate('subjectId', 'name code')
-      .lean();
-
-    const resultsByStudent = new Map<string, any[]>();
-    for (const r of results) {
-      const sid = String((r as any).studentId?._id || (r as any).studentId);
-      if (!resultsByStudent.has(sid)) resultsByStudent.set(sid, []);
-      resultsByStudent.get(sid)!.push(r);
-    }
-
-    const ReportCard = mongoose.model('ReportCard');
-    const upserts: any[] = [];
-
-    for (const student of students) {
-      const sid = String((student as any)._id);
-      const studentResults = resultsByStudent.get(sid) || [];
-
-      const subjectRows = studentResults.map((r: any) => {
-        const total = (r.caScore || 0) + (r.examScore || 0);
-        return {
-          subjectId: r.subjectId?._id || r.subjectId,
-          name: r.subjectId?.name || r.subjectName || 'Subject',
-          ca: r.caScore || 0,
-          exam: r.examScore || 0,
-          total,
-          grade: r.grade || gradeFor(total),
-          remark: r.remark || '',
-        };
-      });
-
-      const average =
-        subjectRows.length > 0
-          ? Math.round(
-              subjectRows.reduce((sum, r) => sum + r.total, 0) / subjectRows.length
-            )
-          : 0;
-
-      upserts.push({
-        updateOne: {
-          filter: { schoolId, studentId: (student as any)._id, sessionId, termId },
-          update: {
-            $set: {
-              schoolId,
-              studentId: (student as any)._id,
-              classId,
-              sessionId,
-              termId,
-              studentName:
-                (student as any).fullName ||
-                `${(student as any).firstName || ''} ${(student as any).lastName || ''}`.trim(),
-              admissionNumber: (student as any).admissionNumber || '',
-              subjects: subjectRows,
-              average,
-              grade: gradeFor(average),
-              remark: remarkFor(average),
-              compiledAt: new Date(),
-            },
-          },
-          upsert: true,
-        },
-      });
-    }
-
-    if (upserts.length > 0) {
-      await ReportCard.bulkWrite(upserts, { ordered: false });
-    }
-
-    logger.info(`Report cards compiled for class ${classId}: ${upserts.length} students`);
-
-    return {
-      count: upserts.length,
-      students: students.length,
-      classId,
-    };
+    return ReportCardBatchService.compileClass(schoolId, classId, sessionId, termId, opts);
   }
 
-  // ------------------------------------------------------------------
-  // School-wide compilation
-  // ------------------------------------------------------------------
   static async generateForSchool(
     schoolId: string,
     sessionId: string,
