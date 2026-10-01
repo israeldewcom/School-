@@ -6,6 +6,7 @@ import { Student } from '../../models/Student';
 import { User } from '../../models/User';
 import { AuditLog } from '../../models/AuditLog';
 import { BadRequestError, NotFoundError } from '../../middleware/error.middleware';
+import { PaymentNotifier } from './payment.notifier';
 //import logger from '../../config/logger';
 
 const ALLOWED_METHODS = ['CASH', 'BANK_TRANSFER', 'POS', 'ONLINE', 'MANUAL', 'CHEQUE', 'CARD', 'OTHER'];
@@ -109,6 +110,9 @@ export class PaymentService {
       if (invoice.amountPaid >= invoice.total) invoice.status = 'PAID';
       else if (invoice.amountPaid > 0) invoice.status = 'PARTIALLY_PAID';
       await invoice.save();
+      void PaymentNotifier.onPaymentApplied(schoolId, String(payment._id));
+    } else {
+      void PaymentNotifier.onPendingApproval(schoolId, String(payment._id));
     }
 
     try {
@@ -208,6 +212,7 @@ export class PaymentService {
         await invoice.save();
       }
     }
+    void PaymentNotifier.onPaymentApplied(schoolId, String(payment._id));
 
     try {
       await AuditLog.create({
@@ -305,6 +310,11 @@ export class PaymentService {
       if (invoice.amountPaid >= invoice.total) invoice.status = 'PAID';
       else if (invoice.amountPaid > 0) invoice.status = 'PARTIALLY_PAID';
       await invoice.save();
+      if (!payment.receiptNo) {
+        payment.receiptNo = `RCP-${Date.now().toString(36).toUpperCase()}`;
+        await payment.save();
+      }
+      void PaymentNotifier.onPaymentApplied(schoolId, String(payment._id));
     }
 
     return { handled: true, paymentId: payment._id, status };
