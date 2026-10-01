@@ -22,6 +22,7 @@ export const paymentQueue = new Queue('payments', baseOptions);
 export const automationQueue = new Queue('automations', baseOptions);
 export const expiryQueue = new Queue('expiry', baseOptions);
 export const reconciliationQueue = new Queue('reconciliation', baseOptions);
+export const timetableQueue = new Queue('timetable', baseOptions);
 
 export async function safeQueueAdd(
   queue: Queue,
@@ -52,6 +53,7 @@ export async function getAllQueueStatus() {
     { name: 'automations', q: automationQueue },
     { name: 'expiry', q: expiryQueue },
     { name: 'reconciliation', q: reconciliationQueue },
+    { name: 'timetable', q: timetableQueue },
   ];
 
   const results = [];
@@ -88,7 +90,7 @@ export async function getAllQueueStatus() {
 export async function closeAllQueues(): Promise<void> {
   const queues = [
     smsQueue, emailQueue, notificationQueue, pdfQueue, reportQueue,
-    paymentQueue, automationQueue, expiryQueue, reconciliationQueue,
+    paymentQueue, automationQueue, expiryQueue, reconciliationQueue, timetableQueue,
   ];
   await Promise.all(
     queues.map(async (q) => {
