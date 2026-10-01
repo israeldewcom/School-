@@ -54,6 +54,18 @@ export interface ISchool extends Document {
   // Billing
   subscriptionId?: string;
 
+  // Which automatic parent/student notifications also go out by SMS
+  // (in-app notifications are always sent). SMS costs credits, so the
+  // school controls it.
+  notificationSettings?: {
+    smsOnPayment: boolean;
+    smsOnAbsence: boolean;
+    smsOnReportCard: boolean;
+    smsOnAssignment: boolean;
+    smsOnAdmission: boolean;
+    classReminderMinutes: number;
+  };
+
   // SMS credits
   smsBalance: number;
   smsRate: number;          // Naira per SMS credit
@@ -185,6 +197,15 @@ const SchoolSchema = new Schema<ISchool, ISchoolModel>(
     // Billing
     // ----------------------------------------------------------------
     subscriptionId: { type: String, trim: true },
+
+    notificationSettings: {
+      smsOnPayment: { type: Boolean, default: true },
+      smsOnAbsence: { type: Boolean, default: true },
+      smsOnReportCard: { type: Boolean, default: true },
+      smsOnAssignment: { type: Boolean, default: false },
+      smsOnAdmission: { type: Boolean, default: true },
+      classReminderMinutes: { type: Number, default: 10, min: 0, max: 120 },
+    },
 
     // ----------------------------------------------------------------
     // SMS credits
