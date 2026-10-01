@@ -2,7 +2,7 @@ import { Worker } from 'bullmq';
 import { redisForBullMQ } from '../config/redis';
 import logger from '../config/logger';
 
-const worker = new Worker('schoolflow_payments', async (job) => {
+const worker = new Worker('payments', async (job) => {
   logger.info('Processing payment job:', job.data);
 }, {
   connection: redisForBullMQ,
