@@ -1,7 +1,8 @@
-import axios from 'axios';
+  import axios from 'axios';
 import { env } from '../../config/env';
 import { School } from '../../models/School';
 import logger from '../../config/logger';
+import { normalizePhone } from '../../utils/phone';
 
 export const sendSMS = async (schoolId: string, to: string, message: string, senderId?: string): Promise<void> => {
   if (!env.SMS_API_KEY) {
@@ -18,7 +19,7 @@ export const sendSMS = async (schoolId: string, to: string, message: string, sen
   // Send SMS via Termii
   try {
     await axios.post('https://api.termii.com/api/sms/send', {
-      to,
+      to: normalizePhone(to) || to,
       from: senderId || env.SMS_SENDER_ID,
       sms: message,
       type: 'plain',
