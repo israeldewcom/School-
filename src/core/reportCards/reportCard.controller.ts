@@ -8,6 +8,9 @@ import { Student } from '../../models/Student';
 import { Result } from '../../models/Result';
 import { Class } from '../../models/Class';
 import { BadRequestError } from '../../middleware/error.middleware';
+import { ReceiptService } from '../payments/receipt.service';
+import { ReportCardBatchService } from './reportCardBatch.service';
+import { getUserScope, assertClassInScope, assertStudentInScope } from '../../middleware/scope.middleware';
 
 export class ReportCardController {
   // ------------------------------------------------------------------
@@ -28,12 +31,14 @@ export class ReportCardController {
 
   static async generateClass(req: Request, res: Response, next: NextFunction) {
     try {
-      const { classId, sessionId, termId } = req.body || {};
+      const { classId, sessionId, termId, nextTermBegins } = req.body || {};
+      assertClassInScope(await getUserScope(req), classId);
       const result = await ReportCardService.generateForClass(
         req.schoolId,
         classId,
         sessionId,
-        termId
+        termId,
+        { nextTermBegins }
       );
       res.json({ success: true, data: result });
     } catch (err) { next(err); }
@@ -63,99 +68,41 @@ export class ReportCardController {
     try {
       const { studentId } = req.params;
       const { sessionId, termId, templateId } = req.query as any;
-
-      if (!mongoose.isValidObjectId(studentId)) {
-        throw new BadRequestError('Invalid student id');
-      }
-
-      // Find the template — explicit id, or the default one.
-      let template;
-      if (templateId && mongoose.isValidObjectId(templateId)) {
-        template = await ReportCardTemplate.findOne({
-          _id: templateId,
-          schoolId: req.schoolId,
-        });
-      } else {
-        template = await ReportCardTemplate.findOne({
-          schoolId: req.schoolId,
-          type: 'report_card',
-          isActive: true,
-        }).sort({ isDefault: -1, createdAt: -1 });
-      }
-
-      if (!template) {
-        throw new BadRequestError(
-          'No report card template uploaded. Upload one from Report Studio first.'
-        );
-      }
-
-      // Gather the student + results.
-      const student = await Student.findOne({ _id: studentId, schoolId: req.schoolId })
-        .populate('classId', 'name')
-        .lean();
-      if (!student) throw new BadRequestError('Student not found');
-
-      const results = await Result.find({
-        schoolId: req.schoolId,
-        studentId,
-        sessionId,
-        termId,
-      })
-        .populate('subjectId', 'name code')
-        .lean();
-
-      const subjectRows = results.map((r: any) => {
-        const total = (r.caScore || 0) + (r.examScore || 0);
-        return {
-          subjectName: r.subjectId?.name || r.subjectName || 'Subject',
-          ca: r.caScore || 0,
-          exam: r.examScore || 0,
-          total,
-          grade: r.grade || gradeFor(total),
-          remark: r.remark || '',
-        };
-      });
-
-      const average =
-        subjectRows.length > 0
-          ? Math.round(
-              subjectRows.reduce((s, r) => s + r.total, 0) / subjectRows.length
-            )
-          : 0;
-
-      const pdf = await ReportCardRendererService.renderReportCard(
-        req.schoolId,
-        String((template as any)._id),
-        {
-          student: {
-            fullName:
-              (student as any).fullName ||
-              `${(student as any).firstName || ''} ${(student as any).lastName || ''}`.trim(),
-            admissionNumber: (student as any).admissionNumber || '',
-            className: (student as any).classId?.name || '',
-            dateOfBirth: (student as any).dateOfBirth
-              ? new Date((student as any).dateOfBirth).toLocaleDateString('en-NG')
-              : undefined,
-            gender: (student as any).gender,
-          },
-          session: req.query.sessionName as string || '',
-          term: req.query.termName as string || '',
-          school: {
-            name: (req as any).school?.name || 'School',
-          },
-          results: subjectRows,
-          average,
-          grade: gradeFor(average),
-          teacherRemark: (student as any).reportRemark || '',
-        }
-      );
-
+      await assertStudentInScope(await getUserScope(req), req.schoolId, studentId);
+      const pdf = await ReportCardBatchService.renderStudentPdf(req.schoolId, studentId, sessionId, termId, templateId);
       res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader(
-        'Content-Disposition',
-        `inline; filename="report-card-${studentId}.pdf"`
-      );
+      res.setHeader('Content-Disposition', `inline; filename="report-card-${studentId}.pdf"`);
       res.send(pdf);
+    } catch (err) { next(err); }
+  }
+
+  // ------------------------------------------------------------------
+  // One merged PDF for a whole class.
+  // GET /report-cards/render-class/:classId?sessionId=&termId=&templateId=&nextTermBegins=
+  // ------------------------------------------------------------------
+  static async renderClassPdf(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { classId } = req.params;
+      const q = req.query as any;
+      assertClassInScope(await getUserScope(req), classId);
+      const { pdf, filename } = await ReportCardBatchService.renderClassPdf(req.schoolId, classId, q.sessionId, q.termId, {
+        templateId: q.templateId,
+        nextTermBegins: q.nextTermBegins,
+        onlyPublished: q.onlyPublished === 'true',
+      });
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+      res.send(pdf);
+    } catch (err) { next(err); }
+  }
+
+  // POST /report-cards/publish-class { classId, sessionId, termId, withholdOwing? }
+  static async publishClass(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { classId, sessionId, termId, withholdOwing } = req.body || {};
+      assertClassInScope(await getUserScope(req), classId);
+      const data = await ReportCardBatchService.publishClass(req.schoolId, req.userId, classId, sessionId, termId, { withholdOwing: !!withholdOwing });
+      res.json({ success: true, data });
     } catch (err) { next(err); }
   }
 
@@ -164,69 +111,11 @@ export class ReportCardController {
   // ------------------------------------------------------------------
   static async renderReceipt(req: Request, res: Response, next: NextFunction) {
     try {
-      const { paymentId } = req.params;
-      const { templateId } = req.query as any;
-
-      if (!mongoose.isValidObjectId(paymentId)) {
-        throw new BadRequestError('Invalid payment id');
-      }
-
-      let template;
-      if (templateId && mongoose.isValidObjectId(templateId)) {
-        template = await ReportCardTemplate.findOne({
-          _id: templateId,
-          schoolId: req.schoolId,
-        });
-      } else {
-        template = await ReportCardTemplate.findOne({
-          schoolId: req.schoolId,
-          type: 'receipt',
-          isActive: true,
-        }).sort({ isDefault: -1, createdAt: -1 });
-      }
-
-      if (!template) {
-        throw new BadRequestError(
-          'No receipt template uploaded. Upload one from Report Studio first.'
-        );
-      }
-
-      const Payment = mongoose.model('Payment');
-      const payment = await Payment.findOne({
-        _id: paymentId,
-        schoolId: req.schoolId,
-      })
-        .populate('studentId', 'fullName firstName lastName')
-        .lean();
-
-      if (!payment) throw new BadRequestError('Payment not found');
-
-      const studentName =
-        (payment as any).studentId?.fullName ||
-        `${(payment as any).studentId?.firstName || ''} ${(payment as any).studentId?.lastName || ''}`.trim() ||
-        '—';
-
-      const pdf = await ReportCardRendererService.renderReceipt(
-        req.schoolId,
-        String((template as any)._id),
-        {
-          receiptNo: (payment as any).receiptNo || String(paymentId).slice(0, 8).toUpperCase(),
-          date: new Date((payment as any).approvedAt || (payment as any).createdAt)
-            .toLocaleDateString('en-NG'),
-          studentName,
-          amount: (payment as any).amount || 0,
-          amountInWords: numberToWords((payment as any).amount || 0),
-          method: (payment as any).method || '—',
-          reference: (payment as any).reference || '—',
-          schoolName: (req as any).school?.name || 'School',
-        }
-      );
-
+      const { pdf, filename } = await ReceiptService.render(req.schoolId, req.params.paymentId, {
+        templateId: (req.query as any).templateId,
+      });
       res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader(
-        'Content-Disposition',
-        `inline; filename="receipt-${paymentId}.pdf"`
-      );
+      res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
       res.send(pdf);
     } catch (err) { next(err); }
   }
@@ -239,44 +128,4 @@ function gradeFor(total: number): string {
   if (total >= 45) return 'D';
   if (total >= 40) return 'E';
   return 'F';
-}
-
-function numberToWords(kobo: number): string {
-  const naira = Math.floor(kobo / 100);
-  if (naira === 0) return 'Zero naira';
-  const units = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'];
-  const teens = ['ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen'];
-  const tens = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
-
-  function threeDigits(n: number): string {
-    let out = '';
-    if (n >= 100) {
-      out += units[Math.floor(n / 100)] + ' hundred';
-      n %= 100;
-      if (n > 0) out += ' and ';
-    }
-    if (n >= 20) {
-      out += tens[Math.floor(n / 10)];
-      if (n % 10 > 0) out += '-' + units[n % 10];
-    } else if (n >= 10) {
-      out += teens[n - 10];
-    } else if (n > 0) {
-      out += units[n];
-    }
-    return out;
-  }
-
-  const parts: string[] = [];
-  const billion = Math.floor(naira / 1_000_000_000);
-  const million = Math.floor((naira % 1_000_000_000) / 1_000_000);
-  const thousand = Math.floor((naira % 1_000_000) / 1000);
-  const rest = naira % 1000;
-
-  if (billion > 0) parts.push(threeDigits(billion) + ' billion');
-  if (million > 0) parts.push(threeDigits(million) + ' million');
-  if (thousand > 0) parts.push(threeDigits(thousand) + ' thousand');
-  if (rest > 0) parts.push(threeDigits(rest));
-
-  const words = parts.join(' ').trim() || 'zero';
-  return words.charAt(0).toUpperCase() + words.slice(1) + ' naira';
 }
