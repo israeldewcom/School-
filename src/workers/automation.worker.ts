@@ -5,7 +5,7 @@ import { Automation } from '../models/Automation';
 import { sendSMS } from '../integrations/sms/termii';
 import { sendEmail } from '../integrations/email/nodemailer';
 
-const worker = new Worker('schoolflow_automations', async (job) => {
+const worker = new Worker('automations', async (job) => {
   const { automationId, action, data } = job.data;
   const automation = await Automation.findById(automationId);
   if (!automation) {
