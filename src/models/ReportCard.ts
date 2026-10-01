@@ -5,7 +5,8 @@ export interface IReportCard extends Document {
   studentId: mongoose.Types.ObjectId;
   sessionId: mongoose.Types.ObjectId;
   termId: mongoose.Types.ObjectId;
-  templateId: mongoose.Types.ObjectId;
+  classId?: mongoose.Types.ObjectId;
+  templateId?: mongoose.Types.ObjectId;
   templateVersion: number;
   data: {
     student: {
@@ -30,6 +31,14 @@ export interface IReportCard extends Document {
     };
     classAverage: number;
     position?: number;
+    classSize?: number;
+    average?: number;
+    grade?: string;
+    sessionName?: string;
+    termName?: string;
+    nextTermBegins?: string;
+    gender?: string;
+    dateOfBirth?: string;
     teacherComment?: string;
     principalComment?: string;
     signature?: string;
@@ -49,8 +58,11 @@ const ReportCardSchema = new Schema<IReportCard>(
     studentId: { type: Schema.Types.ObjectId, ref: 'Student', required: true, index: true },
     sessionId: { type: Schema.Types.ObjectId, ref: 'Session', required: true },
     termId: { type: Schema.Types.ObjectId, ref: 'Term', required: true },
-    templateId: { type: Schema.Types.ObjectId, ref: 'ReportCardTemplate', required: true },
-    templateVersion: { type: Number, required: true },
+    classId: { type: Schema.Types.ObjectId, ref: 'Class', index: true },
+    // Optional: schools that have not uploaded a template still get a
+    // compiled card, rendered with the built-in layout.
+    templateId: { type: Schema.Types.ObjectId, ref: 'ReportCardTemplate' },
+    templateVersion: { type: Number, default: 1 },
     data: {
       student: {
         name: { type: String, required: true },
@@ -76,6 +88,14 @@ const ReportCardSchema = new Schema<IReportCard>(
       },
       classAverage: { type: Number, default: 0 },
       position: { type: Number },
+      classSize: { type: Number },
+      average: { type: Number },
+      grade: String,
+      sessionName: String,
+      termName: String,
+      nextTermBegins: String,
+      gender: String,
+      dateOfBirth: String,
       teacherComment: String,
       principalComment: String,
       signature: String,
@@ -92,5 +112,8 @@ const ReportCardSchema = new Schema<IReportCard>(
   },
   { timestamps: true }
 );
+
+ReportCardSchema.index({ schoolId: 1, studentId: 1, sessionId: 1, termId: 1 }, { unique: true });
+ReportCardSchema.index({ schoolId: 1, classId: 1, termId: 1, sessionId: 1 });
 
 export const ReportCard = mongoose.model<IReportCard>('ReportCard', ReportCardSchema);
