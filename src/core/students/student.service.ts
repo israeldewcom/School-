@@ -6,6 +6,8 @@ import { Invoice } from '../../models/Invoice';
 import { Payment } from '../../models/Payment';
 import logger from '../../config/logger';
 import { BadRequestError, NotFoundError } from '../../middleware/error.middleware';
+import { normalizeImageField, saveImage } from '../../services/storage.service';
+import { syncStudentFees } from '../../services/financeSync.service';
 
 export class StudentService {
   private static shape(s: any, feeTotals?: { expected: number; paid: number }) {
@@ -182,12 +184,13 @@ export class StudentService {
     };
 
     if (data.dateOfBirth) payload.dateOfBirth = new Date(data.dateOfBirth);
-    if (data.photo) payload.photo = String(data.photo);
+    if (data.photo) payload.photo = await normalizeImageField(data.photo, 'students');
 
     const student = new Student(payload);
     await student.save();
 
     await StudentService.autoInvoiceForStudent(schoolId, String(student._id), data.classId);
+    await syncStudentFees(schoolId, String(student._id));
 
     return StudentService.getById(schoolId, String(student._id));
   }
@@ -297,7 +300,7 @@ export class StudentService {
       else student.set('dateOfBirth', undefined);
     }
     if (data.address !== undefined) student.address = data.address;
-    if (data.photo !== undefined) student.photo = data.photo || undefined;
+    if (data.photo !== undefined) student.photo = (await normalizeImageField(data.photo, 'students')) || undefined;
 
     // Merge parentIds — add, don't replace. This is what makes the
     // "guardian created with student" flow actually link.
@@ -309,6 +312,24 @@ export class StudentService {
       student.parentIds = [...existing].map((s) => new mongoose.Types.ObjectId(s)) as any;
     }
 
+    await student.save();
+    return StudentService.getById(schoolId, id);
+  }
+
+  /** Store a photo (base64 data URL) and return its URL without touching any student (used while capturing a new student). */
+  static async uploadPhotoOnly(dataUrl: string) {
+    if (!dataUrl) throw new BadRequestError('photo (base64 data URL) is required');
+    return { url: await saveImage({ dataUrl, folder: 'students' }) };
+  }
+
+  /** Set a student's passport photo from a data URL or a multer-saved file URL. */
+  static async setPhoto(schoolId: string, id: string, photo: string) {
+    if (!mongoose.isValidObjectId(id)) throw new BadRequestError('Invalid student id');
+    const student = await Student.findOne({ _id: id, schoolId });
+    if (!student) throw new NotFoundError('Student not found');
+    const url = await normalizeImageField(photo, 'students');
+    if (!url) throw new BadRequestError('photo is required');
+    student.photo = url;
     await student.save();
     return StudentService.getById(schoolId, id);
   }
