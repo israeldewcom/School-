@@ -49,4 +49,36 @@ export class PortalController {
   static invoices = wrap((req, scope) => PortalService.invoices(scope, req.params.studentId));
 
   static payments = wrap((req, scope) => PortalService.payments(scope, req.params.studentId));
+
+  static timetable = wrap((req, scope) => PortalService.timetable(scope, req.params.studentId));
+
+  static assignments = wrap((req, scope) => PortalService.assignments(scope, req.params.studentId));
+
+  static submitAssignment = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const scope = await getUserScope(req);
+      const data = await PortalService.submitAssignment(scope, req.params.studentId, req.params.assignmentId, req.body);
+      res.status(201).json({ success: true, data });
+    } catch (err) { next(err); }
+  };
+
+  static receiptPdf = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const scope = await getUserScope(req);
+      const { pdf, filename } = await PortalService.receiptPdf(scope, req.params.studentId, req.params.paymentId);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+      res.send(pdf);
+    } catch (err) { next(err); }
+  };
+
+  static reportCardPdf = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const scope = await getUserScope(req);
+      const pdf = await PortalService.reportCardPdf(scope, req.params.studentId, req.params.id);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'inline; filename="report-card.pdf"');
+      res.send(pdf);
+    } catch (err) { next(err); }
+  };
 }
