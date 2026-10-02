@@ -26,6 +26,10 @@ router.post(
   StaffController.createLogin
 );
 
+// Which subjects/classes does this teacher take?
+router.get('/:id/teaching', requirePermission('staff', 'read'), StaffController.getTeaching);
+router.put('/:id/teaching', requirePermission('staff', 'write'), StaffController.assignTeaching);
+
 router.put(
   '/:id',
   requirePermission('staff', 'write'),
