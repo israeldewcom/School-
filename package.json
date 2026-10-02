@@ -1,6 +1,6 @@
 {
   "name": "schoolflow-api",
-  "version": "3.4.0",
+  "version": "3.5.0",
   "description": "SchoolFlow — School Operating System backend API",
   "main": "dist/server.js",
   "engines": {
@@ -17,7 +17,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "jest --passWithNoTests",
     "clean": "rm -rf dist",
-    "seed": "ts-node src/scripts/seed.ts"
+    "seed": "ts-node src/scripts/seed.ts",
+    "backfill:sites": "ts-node src/scripts/backfill-sites.ts"
   },
   "dependencies": {
     "argon2": "^0.41.1",
@@ -52,7 +53,8 @@
     "uuid": "^10.0.0",
     "winston": "^3.13.1",
     "winston-daily-rotate-file": "^5.0.0",
-    "zod": "^3.23.8"
+    "zod": "^3.23.8",
+    "sharp": "^0.33.5"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
@@ -78,13 +80,20 @@
     "typescript": "^5.5.4"
   },
   "nodemonConfig": {
-    "ignore": ["dist/*", "node_modules/*", "logs/*"],
+    "ignore": [
+      "dist/*",
+      "node_modules/*",
+      "logs/*"
+    ],
     "delay": 500
   },
   "jest": {
     "preset": "ts-jest",
     "testEnvironment": "node",
-    "testMatch": ["**/__tests__/**/*.ts", "**/?(*.)+(spec|test).ts"]
+    "testMatch": [
+      "**/__tests__/**/*.ts",
+      "**/?(*.)+(spec|test).ts"
+    ]
   },
   "private": true
 }
