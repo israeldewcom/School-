@@ -9,8 +9,6 @@ import feeRoutes from '../core/fees/fee.routes';
 import invoiceRoutes from '../core/invoices/invoice.routes';
 import paymentRoutes from '../core/payments/payment.routes';
 import subscriptionRoutes from '../core/subscriptions/subscription.routes';
-import renewalRoutes from '../core/subscriptions/renewal.routes';
-import queueRoutes from '../core/queues/queue.routes';
 import resultRoutes from '../core/results/result.routes';
 import attendanceRoutes from '../core/attendance/attendance.routes';
 import reportCardRoutes from '../core/reportCards/reportCard.routes';
@@ -30,8 +28,14 @@ import examRoutes from '../core/exams/exam.routes';
 import defaultersRoutes from '../core/defaulters/defaulters.routes';
 import userRoutes from '../core/users/user.routes';
 import portalRoutes from '../core/portal/portal.routes';
+import timetableRoutes from '../core/timetable/timetable.routes';
+import admissionRoutes from '../core/admissions/admission.routes';
+import assignmentRoutes from '../core/assignments/assignment.routes';
+import siteRoutes from '../core/site/site.routes';
+import sitePublicRoutes from '../core/site/site.public.routes';
+import brandingRoutes from '../core/branding/branding.routes';
+import enrollmentRoutes from '../core/enrollment/enrollment.routes';
 import { SchoolController } from '../core/schools/school.controller';
-import { SubscriptionController } from '../core/subscriptions/subscription.controller';
 import {
   authMiddleware,
   requireSchoolMembership,
@@ -39,7 +43,6 @@ import {
 } from '../middleware/auth.middleware';
 import { requireActiveSubscription } from '../middleware/subscription.middleware';
 import { checkEntitlement } from '../middleware/entitlement.middleware';
-import { requirePermission } from '../middleware/permission.middleware';
 
 const router = express.Router();
 
@@ -48,20 +51,12 @@ router.use('/auth', authRoutes);
 router.use('/webhooks', webhookRoutes);
 router.get('/schools/ping', SchoolController.ping);
 router.post('/schools/onboard', SchoolController.onboard);
+// Public school websites + online admission (no login)
+router.use('/public/sites', sitePublicRoutes);
 
 // 2. Authenticated
 router.use(authMiddleware);
 router.use('/platform', platformRoutes);
-
-// 2b. Super-admin routes. These MUST sit before requireSchoolMembership,
-// which rejects SUPER_ADMIN (they have no school).
-router.get('/subscriptions/plans', SubscriptionController.listPlans);
-router.use('/queues', requirePermission('platform', 'access'), queueRoutes);
-router.use(
-  '/subscriptions/renewals',
-  requirePermission('subscriptions', 'approve'),
-  renewalRoutes
-);
 
 // 3. School-scoped
 router.use(requireSchoolMembership);
@@ -83,6 +78,12 @@ router.use('/results', resultRoutes);
 router.use('/attendance', attendanceRoutes);
 router.use('/exams', examRoutes);
 router.use('/defaulters', defaultersRoutes);
+router.use('/timetable', timetableRoutes);
+router.use('/admissions', admissionRoutes);
+router.use('/assignments', assignmentRoutes);
+router.use('/site', siteRoutes);
+router.use('/branding', brandingRoutes);
+router.use('/enrollment', enrollmentRoutes);
 
 // Report card templates BEFORE /report-cards/:id
 router.use('/report-cards/templates', reportCardTemplateRoutes);
