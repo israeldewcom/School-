@@ -98,7 +98,7 @@ export class ReportCardBatchService {
     }
 
     // Per-student totals + ranking
-    const rows = students.map((s: any) => {
+    const rows: any[] = students.map((s: any) => {
       const subj = (resultsBy.get(String(s._id)) || []).map((r: any) => {
         const total = typeof r.total === 'number' ? r.total : (r.caScore || 0) + (r.examScore || 0);
         const b = bandFor(bands, total);
@@ -116,7 +116,7 @@ export class ReportCardBatchService {
       return { s, subj, average, hasResults: subj.length > 0 };
     });
 
-    const ranked = rows.filter((r) => r.hasResults).sort((a, b) => b.average - a.average);
+    const ranked: any[] = rows.filter((r) => r.hasResults).sort((a, b) => b.average - a.average);
     const positionOf = new Map<string, number>();
     ranked.forEach((r, i) => {
       const prev = ranked[i - 1];
