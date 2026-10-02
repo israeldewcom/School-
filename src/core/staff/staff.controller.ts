@@ -60,4 +60,22 @@ export class StaffController {
       next(error);
     }
   }
+
+  static async getTeaching(req: Request, res: Response, next: NextFunction) {
+    try {
+      const data = await StaffService.getTeaching(req.params.id, req.schoolId!);
+      res.json({ success: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  static async assignTeaching(req: Request, res: Response, next: NextFunction) {
+    try {
+      const data = await StaffService.assignTeaching(req.params.id, req.schoolId!, req.body || {});
+      res.json({ success: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
 }
