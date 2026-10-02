@@ -10,6 +10,7 @@ export const createStaffSchema = z.object({
       errorMap: () => ({ message: 'Role must be one of TEACHER, ACCOUNTANT, ADMIN, OTHER' }),
     }),
     department: z.string().optional(),
+    photo: z.string().optional(),
   }),
 });
 
