@@ -12,6 +12,11 @@ import '../../models/Term';
 import '../../models/Session';
 import { BadRequestError, NotFoundError } from '../../utils/errors';
 import { UserScope } from '../../middleware/scope.middleware';
+import { TimetableService } from '../timetable/timetable.service';
+import { AssignmentService } from '../assignments/assignment.service';
+import { ReceiptService } from '../payments/receipt.service';
+import { ReportCardBatchService } from '../reportCards/reportCardBatch.service';
+import { feeStatus } from '../../services/financeSync.service';
 
 function forbidden(message: string): Error {
   const err: any = new Error(message);
@@ -141,11 +146,16 @@ async function financeTotals(scope: UserScope, studentId: string) {
     },
   ]);
   const r = rows[0];
+  const totalBilled = r?.totalBilled || 0;
+  const totalPaid = r?.totalPaid || 0;
   return {
-    totalBilled: r?.totalBilled || 0,
-    totalPaid: r?.totalPaid || 0,
+    totalBilled,
+    totalPaid,
     balance: r?.balance || 0,
     invoices: r?.invoices || 0,
+    // PAID = fully paid, PARTIAL = part paid, OUTSTANDING = nothing paid yet
+    status: feeStatus(totalBilled, totalPaid),
+    percentPaid: totalBilled > 0 ? Math.min(100, Math.round((totalPaid / totalBilled) * 100)) : 0,
   };
 }
 
@@ -403,5 +413,38 @@ export class PortalService {
       .limit(200)
       .select('-providerPayload -providerReference -submittedBy -approvedBy -rejectedBy')
       .lean();
+  }
+
+  // ------------------------------------------------------------------
+  // Timetable, assignments, receipt + report card PDFs
+  // ------------------------------------------------------------------
+  static async timetable(scope: UserScope, studentId: string) {
+    const student = await loadOwnStudent(scope, studentId);
+    return TimetableService.forClass(scope.schoolId, String(student.classId?._id || student.classId));
+  }
+
+  static async assignments(scope: UserScope, studentId: string) {
+    await loadOwnStudent(scope, studentId);
+    return AssignmentService.forStudent(scope, studentId);
+  }
+
+  static async submitAssignment(scope: UserScope, studentId: string, assignmentId: string, body: any) {
+    await loadOwnStudent(scope, studentId);
+    return AssignmentService.submit(scope, studentId, assignmentId, body);
+  }
+
+  /** A parent downloads the receipt for one of their own child's approved payments. */
+  static async receiptPdf(scope: UserScope, studentId: string, paymentId: string) {
+    requireFinance(scope);
+    await loadOwnStudent(scope, studentId);
+    return ReceiptService.render(scope.schoolId, paymentId, { studentIds: [studentId] });
+  }
+
+  static async reportCardPdf(scope: UserScope, studentId: string, id: string) {
+    await loadOwnStudent(scope, studentId);
+    if (!mongoose.isValidObjectId(id)) throw new BadRequestError('Invalid report card id');
+    const card = await ReportCard.findOne({ _id: id, schoolId: scope.schoolId, studentId, status: 'PUBLISHED' }).lean();
+    if (!card) throw new NotFoundError('Report card not found');
+    return ReportCardBatchService.renderCard(scope.schoolId, card);
   }
 }
