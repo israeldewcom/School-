@@ -177,7 +177,8 @@ export const renderReportCardPDF = async (input: ReportCardRenderInput): Promise
 // ---- Payment receipt ---------------------------------------------------------
 
 interface ReceiptRenderInput {
-  school: { name: string; address?: string; phone?: string };
+  school: { name: string; address?: string; phone?: string; logoPng?: Buffer };
+  status?: string; // 'FULLY PAID' | 'PARTIALLY PAID'
   payment: {
     reference: string;
     amount: number; // kobo
@@ -196,6 +197,13 @@ interface ReceiptRenderInput {
 export const renderReceiptPDF = async (input: ReceiptRenderInput): Promise<Buffer> => {
   const { school, payment, invoice, student } = input;
   const doc = new PDFDocument({ size: 'A4', margin: 50 });
+
+  if (school.logoPng) {
+    try {
+      doc.image(school.logoPng, doc.page.width / 2 - 28, 40, { fit: [56, 56] });
+      doc.y = 104;
+    } catch (_) {}
+  }
 
   doc.fontSize(18).font('Helvetica-Bold').text(school.name, { align: 'center' });
   if (school.address) doc.fontSize(9).font('Helvetica').text(school.address, { align: 'center' });
@@ -223,6 +231,10 @@ export const renderReceiptPDF = async (input: ReceiptRenderInput): Promise<Buffe
   doc.text(`Invoice Total: ${naira(invoice.total)}`);
   doc.text(`Total Paid to Date: ${naira(invoice.amountPaid)}`);
   doc.text(`Outstanding Balance: ${naira(invoice.balance)}`);
+  if (input.status) {
+    doc.moveDown(1);
+    doc.font('Helvetica-Bold').fontSize(12).text(`Status: ${input.status}`);
+  }
 
   doc.moveDown(3);
   doc.fontSize(9).font('Helvetica').text('This is a computer-generated receipt.', { align: 'center' });
