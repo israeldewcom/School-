@@ -182,7 +182,7 @@ export class AssignmentService {
     ]);
     const due = a.dueDate ? ` Due ${new Date(a.dueDate).toLocaleDateString('en-NG', { day: 'numeric', month: 'short' })}.` : '';
     const body = `New ${subject?.name || ''} assignment: ${a.title}.${due}`.replace(/\s+/g, ' ').trim();
-    void Notifier.families(schoolId, students.map((s) => s._id), {
+    void Notifier.families(schoolId, students.map((s: any) => s._id), {
       title: 'New assignment',
       body,
       sms: body,
@@ -214,7 +214,7 @@ export class AssignmentService {
       AssignmentSubmission.find({ schoolId, assignmentId: a._id }).lean(),
     ]);
     const bySid = new Map<string, any>(subs.map((s: any) => [String(s.studentId), s]));
-    const rows = students.map((s: any) => {
+    const rows: any[] = students.map((s: any) => {
       const sub = bySid.get(String(s._id));
       return {
         studentId: String(s._id),
