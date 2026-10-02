@@ -1,4 +1,4 @@
-  // src/middleware/permission.middleware.ts
+// src/middleware/permission.middleware.ts
 import { Request, Response, NextFunction } from 'express';
 
 // Convenience groups used by the newer modules below.
@@ -135,6 +135,25 @@ export const PERMISSION_ROLES: Record<string, Record<string, string[]>> = {
     read:   [...ADMINS, 'HEAD_TEACHER'],
     write:  [...ADMINS, 'HEAD_TEACHER'],
     enroll: [...ADMINS],
+  },
+
+  // Teachers set homework for their own classes/subjects (scope is enforced in the service).
+  assignments: {
+    read:  [...ADMINS, 'HEAD_TEACHER', ...TEACHING],
+    write: [...ADMINS, 'HEAD_TEACHER', ...TEACHING],
+  },
+
+  // Public school website, admission form and logo/branding.
+  site: {
+    read:  [...ADMINS, 'HEAD_TEACHER'],
+    write: [...ADMINS],
+  },
+
+  // The school's own profile (name, address, logo, notification settings).
+  school: {
+    read:  EVERYONE,
+    write: [...ADMINS],
+    delete: [],
   },
 
   hostel: {
