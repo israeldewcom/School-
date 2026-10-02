@@ -11,6 +11,7 @@ import { Attendance } from '../../models/Attendance';
 import { AuditLog } from '../../models/AuditLog';
 import { NotFoundError, ForbiddenError, BadRequestError } from '../../utils/errors';
 import logger from '../../config/logger';
+import { SiteService } from '../site/site.service';
 
 const TERM_SEQUENCE = ['First Term', 'Second Term', 'Third Term'];
 
@@ -106,6 +107,13 @@ export class SchoolService {
       resourceId: school._id,
       after: data,
     });
+
+    // 6. Every school gets its public website + online admission form automatically.
+    try {
+      await SiteService.ensureSite(String(school._id));
+    } catch (err: any) {
+      logger.warn(`Could not create website for school ${school._id}: ${err?.message}`);
+    }
 
     return school;
   }
