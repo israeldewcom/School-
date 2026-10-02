@@ -5,6 +5,7 @@ import { StudentService } from './student.service';
 import { getUserScope } from '../../middleware/scope.middleware';
 import { Class } from '../../models/Class';
 import { BadRequestError } from '../../middleware/error.middleware';
+import { persistUploadedFile } from '../../services/storage.service';
 
 export class StudentController {
   static async list(req: Request, res: Response, next: NextFunction) {
@@ -171,5 +172,26 @@ export class StudentController {
       const result = await StudentService.promote(req.schoolId, fromClassId, toClassId);
       res.json({ success: true, data: result });
     } catch (err) { next(err); }
+  }
+
+  /** POST /students/photo  { photo: dataUrl }  ->  { url }  (before the student exists) */
+  static async uploadPhoto(req: Request, res: Response, next: NextFunction) {
+    try {
+      const data = await StudentService.uploadPhotoOnly(req.body?.photo || req.body?.dataUrl);
+      res.status(201).json({ success: true, data });
+    } catch (error) { next(error); }
+  }
+
+  /** POST /students/:id/photo  JSON { photo: dataUrl }  or multipart field "photo" */
+  static async setPhoto(req: Request, res: Response, next: NextFunction) {
+    try {
+      let photo: string = req.body?.photo;
+      if (req.file) {
+        const saved = await persistUploadedFile(req.file, 'students');
+        photo = saved.url;
+      }
+      const data = await StudentService.setPhoto(req.schoolId!, req.params.id, photo);
+      res.json({ success: true, data });
+    } catch (error) { next(error); }
   }
 }
