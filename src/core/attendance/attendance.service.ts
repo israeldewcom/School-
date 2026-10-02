@@ -1,5 +1,6 @@
 // src/core/attendance/attendance.service.ts
 import mongoose from 'mongoose';
+import { Notifier } from '../../services/notifier.service';
 import { Attendance } from '../../models/Attendance';
 import { Student } from '../../models/Student';
 import { Class } from '../../models/Class';
@@ -59,7 +60,9 @@ export class AttendanceService {
       existing.status = status;
       existing.remark = data.remark || '';
       existing.timestamp = new Date();
+      const changed = existing.isModified('status');
       await existing.save();
+      if (changed) AttendanceService.alertParent(schoolId, student, status, date);
       return existing;
     }
 
@@ -75,7 +78,30 @@ export class AttendanceService {
       timestamp: new Date(),
     });
     await attendance.save();
+    AttendanceService.alertParent(schoolId, student, status, date);
     return attendance;
+  }
+
+  /**
+   * Tell the family when a child is marked ABSENT or LATE today. Fire-and-forget:
+   * a notification problem must never block marking the register. Old dates
+   * (back-filled registers) are not announced.
+   */
+  private static alertParent(schoolId: string, student: any, status: string, date: Date) {
+    if (status !== 'ABSENT' && status !== 'LATE') return;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (date.getTime() !== today.getTime()) return;
+
+    const name = student.fullName || `${student.firstName || ''} ${student.lastName || ''}`.trim();
+    const word = status === 'ABSENT' ? 'absent from school' : 'late to school';
+    void Notifier.families(schoolId, [student._id], {
+      title: status === 'ABSENT' ? 'Absent today' : 'Late today',
+      body: `${name} was marked ${word} today.`,
+      sms: `${name} was marked ${word} today. Please contact the school if this is unexpected.`,
+      smsSetting: 'smsOnAbsence',
+      metadata: { kind: 'ATTENDANCE', status, studentId: String(student._id) },
+    });
   }
 
   // ------------------------------------------------------------------
