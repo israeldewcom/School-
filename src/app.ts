@@ -1,4 +1,4 @@
-   // src/app.ts
+// src/app.ts
 import express, { Application, Request, Response } from 'express';
 import mongoose from 'mongoose';
 import cors from 'cors';
@@ -13,6 +13,7 @@ import path from 'path';
 import * as envConfig from './config/env';
 import logger from './config/logger';
 import { redis } from './config/redis';
+import siteHtmlRoutes from './core/site/site.html.routes';
 import routes from './routes';
 import { errorHandler, notFoundHandler } from './middleware/error.middleware';
 
@@ -222,6 +223,9 @@ app.get('/ready', (_req: Request, res: Response) => {
 // ============================================================
 // Auth and webhook limiters are applied first, then requests fall
 // through to the main router which serves the actual handlers.
+// Public school website: https://<api-host>/s/<school-name>
+app.use('/s', siteHtmlRoutes);
+
 app.use('/api/v1/auth', authLimiter);
 app.use('/api/v1/webhooks', webhookLimiter);
 app.use('/api/v1', routes);
