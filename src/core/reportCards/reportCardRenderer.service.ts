@@ -5,7 +5,7 @@ import { ReportCardTemplate } from '../../models/ReportCardTemplate';
 import { NotFoundError } from '../../middleware/error.middleware';
 import logger from '../../config/logger';
 
-interface RenderData {
+export interface RenderData {
   student: {
     fullName: string;
     admissionNumber: string;
@@ -83,6 +83,12 @@ export class ReportCardRendererService {
       reference: string;
       schoolName: string;
       cashierName?: string;
+      admissionNumber?: string;
+      className?: string;
+      invoiceTotal?: number;      // kobo
+      amountPaidToDate?: number;  // kobo
+      balance?: number;           // kobo
+      paymentStatus?: string;     // 'FULLY PAID' | 'PARTIALLY PAID'
     }
   ): Promise<Buffer> {
     if (!mongoose.isValidObjectId(templateId)) {
@@ -102,8 +108,8 @@ export class ReportCardRendererService {
     const renderData: RenderData = {
       student: {
         fullName: data.studentName,
-        admissionNumber: '',
-        className: '',
+        admissionNumber: data.admissionNumber || '',
+        className: data.className || '',
       },
       session: '',
       term: '',
@@ -266,6 +272,20 @@ export class ReportCardRendererService {
         return coerce(receiptValues.reference);
       case 'cashier_name':
         return coerce(receiptValues.cashierName);
+      case 'invoice_total':
+        return receiptValues.invoiceTotal !== undefined
+          ? coerce(`₦${(receiptValues.invoiceTotal / 100).toLocaleString('en-NG')}`)
+          : null;
+      case 'amount_paid_to_date':
+        return receiptValues.amountPaidToDate !== undefined
+          ? coerce(`₦${(receiptValues.amountPaidToDate / 100).toLocaleString('en-NG')}`)
+          : null;
+      case 'balance':
+        return receiptValues.balance !== undefined
+          ? coerce(`₦${(receiptValues.balance / 100).toLocaleString('en-NG')}`)
+          : null;
+      case 'payment_status':
+        return coerce(receiptValues.paymentStatus);
 
       default:
         return null;
