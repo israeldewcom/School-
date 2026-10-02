@@ -1,0 +1,24 @@
+name: Keep Render Awake
+
+on:
+  schedule:
+    # Runs every 10 minutes (GitHub's minimum schedule)
+    - cron: '*/10 * * * *'
+  workflow_dispatch: # allows manual trigger
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Render backend
+        run: |
+          echo "Pinging at $(date -u)"
+          response=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 30 \
+            https://real-wealthy-1-gwiz.onrender.com/health)
+          echo "HTTP Status: $response"
+          if [ "$response" != "200" ]; then
+            echo "⚠️ Server responded with $response"
+            exit 1
+          fi
+          echo "✅ Server is awake"
