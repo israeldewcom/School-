@@ -37,6 +37,12 @@ const VALID_RECEIPT_FIELDS = new Set([
   'method',
   'reference',
   'cashier_name',
+  'admission_number',
+  'class_name',
+  'invoice_total',
+  'amount_paid_to_date',
+  'balance',
+  'payment_status',
   'custom_text',
 ]);
 
