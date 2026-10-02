@@ -36,6 +36,7 @@ import sitePublicRoutes from '../core/site/site.public.routes';
 import brandingRoutes from '../core/branding/branding.routes';
 import enrollmentRoutes from '../core/enrollment/enrollment.routes';
 import { SchoolController } from '../core/schools/school.controller';
+import hostelRoutes from '../core/hostel/hostel.routes';
 import {
   authMiddleware,
   requireSchoolMembership,
@@ -97,5 +98,6 @@ router.use('/academics', academicRoutes);
 router.use('/analytics', analyticsRoutes);
 router.use('/support', supportRoutes);
 router.use('/export', exportRoutes);
+router.use('/hostel', hostelRoutes);
 
 export default router;
