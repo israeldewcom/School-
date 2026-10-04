@@ -65,7 +65,7 @@ export class UserService {
         id: String(s._id),
         name: s.name,
       })),
-      // Approval delegation — only meaningful for BURSAR but returned
+      // Approval delegation — meaningful for BURSAR and ADMIN, returned
       // for every user so the frontend doesn't have to guess.
       canApprovePayments: !!u.canApprovePayments,
       canApprovePaymentsSetAt: u.canApprovePaymentsSetAt || null,
@@ -241,8 +241,8 @@ export class UserService {
       user.set('studentId', undefined);
       user.role = data.role;
 
-      // If the role changes away from BURSAR, drop any delegation.
-      if (data.role !== 'BURSAR') {
+      // If the role changes away from BURSAR / ADMIN, drop any delegation.
+      if (data.role !== 'BURSAR' && data.role !== 'ADMIN') {
         (user as any).canApprovePayments = false;
       }
     }
@@ -285,10 +285,10 @@ export class UserService {
   }
 
   /**
-   * Grant or revoke payment-approval permission for a bursar.
+   * Grant or revoke payment-approval permission for a bursar or admin.
    *
    * Only the proprietor (or super admin) can call this. The change
-   * takes effect on the bursar's next request because the auth
+   * takes effect on the user's next request because the auth
    * middleware reloads the user document on every call.
    */
   static async setApprovalDelegation(
@@ -304,9 +304,9 @@ export class UserService {
     const target = await User.findOne({ _id: targetUserId, schoolId });
     if (!target) throw new NotFoundError('User not found');
 
-    if (target.role !== 'BURSAR') {
+    if (target.role !== 'BURSAR' && target.role !== 'ADMIN') {
       throw new BadRequestError(
-        'Payment approval can only be delegated to a bursar account.'
+        'Payment approval can only be delegated to a bursar or admin account.'
       );
     }
     if (!target.isActive) {
