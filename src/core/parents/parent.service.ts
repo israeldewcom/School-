@@ -5,6 +5,7 @@ import { Student } from '../../models/Student';
 import { Invoice } from '../../models/Invoice';
 import { Payment } from '../../models/Payment';
 import { BadRequestError, NotFoundError } from '../../middleware/error.middleware';
+import { PortalAccountService } from '../accounts/portalAccount.service';
 
 export class ParentService {
   /**
@@ -176,8 +177,26 @@ export class ParentService {
       payload.address = String(data.address).trim();
     }
 
+    // One phone number = one parent record = one portal login. If this phone
+    // is already registered in the school, reuse that parent (siblings share
+    // a single login) instead of creating a duplicate.
+    const sameDigits = payload.phone.replace(/[^\d+]/g, '');
+    const duplicate = await Parent.findOne({ schoolId, phone: { $in: [payload.phone, sameDigits] } });
+    if (duplicate) {
+      try {
+        await PortalAccountService.ensureParentUser(schoolId, duplicate);
+      } catch (_) {}
+      return ParentService.getById(schoolId, String(duplicate._id));
+    }
+
     const parent = new Parent(payload);
     await parent.save();
+
+    // Create the parent's portal login: username = phone, first password = phone.
+    try {
+      await PortalAccountService.ensureParentUser(schoolId, parent);
+    } catch (_) {}
+
     return ParentService.getById(schoolId, String(parent._id));
   }
 
@@ -187,6 +206,7 @@ export class ParentService {
     }
     const parent = await Parent.findOne({ _id: id, schoolId });
     if (!parent) throw new NotFoundError('Parent not found');
+    const previousPhone = parent.phone;
 
     if (data.firstName !== undefined) parent.firstName = String(data.firstName).trim();
     if (data.lastName !== undefined) parent.lastName = String(data.lastName).trim();
@@ -209,6 +229,14 @@ export class ParentService {
     }
 
     await parent.save();
+
+    if (parent.phone !== previousPhone) {
+      await PortalAccountService.syncParentUsername(schoolId, id, parent.phone);
+    }
+    try {
+      await PortalAccountService.ensureParentUser(schoolId, parent);
+    } catch (_) {}
+
     return ParentService.getById(schoolId, id);
   }
 
