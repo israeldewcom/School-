@@ -1,4 +1,4 @@
-  import dotenv from 'dotenv';
+import dotenv from 'dotenv';
 dotenv.config();
 
 export const env = {
@@ -17,8 +17,15 @@ export const env = {
   // Where Paystack sends the parent after checkout (your frontend URL).
   PAYSTACK_CALLBACK_URL: process.env.PAYSTACK_CALLBACK_URL || process.env.FRONTEND_URL,
   FRONTEND_URL: process.env.FRONTEND_URL,
-  // Base for public school links, e.g. https://schoolflow.app -> https://schoolflow.app/s/st-marys
-  PUBLIC_SITE_BASE_URL: process.env.PUBLIC_SITE_BASE_URL || process.env.FRONTEND_URL,
+  // School websites are served by THIS API at /s/<slug>, so the base must be the
+  // API's own public address, NOT the dashboard (FRONTEND_URL).
+  PUBLIC_SITE_BASE_URL:
+    process.env.PUBLIC_SITE_BASE_URL ||
+    process.env.API_PUBLIC_URL ||
+    process.env.RENDER_EXTERNAL_URL ||
+    '',
+  // Where the "Portal login" button on school websites sends people (the dashboard).
+  PORTAL_URL: process.env.PORTAL_URL || process.env.FRONTEND_URL || '',
   SMS_API_KEY: process.env.SMS_API_KEY!,
   SMS_SENDER_ID: process.env.SMS_SENDER_ID || 'SchoolFlow',
   SMTP_HOST: process.env.SMTP_HOST!,
