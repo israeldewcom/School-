@@ -8,37 +8,20 @@ import { Student } from '../../models/Student';
 import { Parent } from '../../models/Parent';
 import { Class } from '../../models/Class';
 import { School } from '../../models/School';
-import { User } from '../../models/User';
 import { Subscription } from '../../models/Subscription';
 import { SubscriptionPlan } from '../../models/SubscriptionPlan';
 import { StudentService } from '../students/student.service';
+import { PortalAccountService } from '../accounts/portalAccount.service';
 import { Notifier } from '../../services/notifier.service';
 import { normalizeImageField } from '../../services/storage.service';
 import { BadRequestError, ForbiddenError, NotFoundError } from '../../middleware/error.middleware';
 import { escapeRegex, oid, optOid, pageParams } from '../../utils/validate';
 import { normalizePhone } from '../../utils/phone';
-import { localPhone, publicUrlFor, slugify } from '../site/site.service';
+import { localPhone, publicUrlFor } from '../site/site.service';
 import { SchoolSite } from '../../models/SchoolSite';
 import logger from '../../config/logger';
 
 export interface Actor { id: string; name: string }
-
-const PW_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
-function generatePassword(len = 8): string {
-  let out = '';
-  for (let i = 0; i < len; i++) out += PW_ALPHABET[crypto.randomInt(PW_ALPHABET.length)];
-  return out;
-}
-
-async function uniqueUsername(base: string): Promise<string> {
-  const clean = slugify(base).replace(/-/g, '').slice(0, 14) || 'user';
-  for (let i = 0; i < 12; i++) {
-    const cand = i === 0 ? clean : `${clean}${crypto.randomInt(10, 9999)}`;
-    const used = await User.exists({ username: cand.toLowerCase() });
-    if (!used) return cand.toLowerCase();
-  }
-  return `${clean}${Date.now().toString(36)}`;
-}
 
 // Same rule as checkEntitlement('students'), for code paths that do not go through that route middleware.
 async function assertStudentCapacity(schoolId: string) {
@@ -380,7 +363,7 @@ export class AdmissionService {
             address: app.applicant.address || app.parent.address,
             photo: app.applicant.photo,
             parentIds: [String(parent._id)],
-          });
+          }, { skipPortalAccounts: true });
         } catch (e: any) {
           lastErr = e;
           if (!/admission number already exists/i.test(String(e?.message))) throw e;
@@ -404,37 +387,17 @@ export class AdmissionService {
 
     // 3. Guardian portal login
     const credentials: { parent: any; student: any } = { parent: null, student: null };
-    let parentUser: any = await User.findOne({ schoolId, role: 'PARENT', parentId: parent._id });
-    if (!parentUser) {
-      const username = await uniqueUsername(`${parent.lastName}${String(parent.firstName || '')[0] || ''}`);
-      const password = generatePassword();
-      parentUser = await User.create({
-        schoolId, username, password, role: 'PARENT', parentId: parent._id,
-        name: `${parent.firstName} ${parent.lastName}`.trim(),
-        email: parent.email || `${username}.${Date.now().toString(36)}@${String(schoolId).slice(-6)}.local`,
-        phone: parent.phone, isActive: true,
-      });
-      credentials.parent = { username, password, isNew: true };
-    } else {
-      credentials.parent = { username: parentUser.username, password: null, isNew: false };
-    }
+    // Username = phone number, first password = phone number (they can change it any time).
+    const parentLogin = await PortalAccountService.ensureParentUser(schoolId, parent);
+    const parentUser: any = parentLogin.user;
+    if (!parentUser) throw new BadRequestError('Could not create the parent login. Check the parent phone number.');
+    credentials.parent = { username: parentLogin.username, password: parentLogin.password, isNew: parentLogin.isNew };
 
     // 4. Student portal login
     if (opts.createStudentLogin !== false) {
-      let studentUser: any = await User.findOne({ schoolId, role: 'STUDENT', studentId: student._id });
-      if (!studentUser) {
-        const username = await uniqueUsername(String(student.admissionNumber).replace(/[^A-Za-z0-9]/g, ''));
-        const password = generatePassword();
-        studentUser = await User.create({
-          schoolId, username, password, role: 'STUDENT', studentId: student._id,
-          name: student.fullName || `${student.firstName} ${student.lastName}`,
-          email: `${username}.${Date.now().toString(36)}@${String(schoolId).slice(-6)}.local`,
-          isActive: true,
-        });
-        credentials.student = { username, password, isNew: true };
-      } else {
-        credentials.student = { username: studentUser.username, password: null, isNew: false };
-      }
+      // Username = admission number, first password = admission number.
+      const studentLogin = await PortalAccountService.ensureStudentUser(schoolId, student);
+      credentials.student = { username: studentLogin.username, password: studentLogin.password, isNew: studentLogin.isNew };
     }
 
     // 5. Close out the application
