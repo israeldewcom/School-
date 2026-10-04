@@ -230,11 +230,13 @@ export class SubscriptionService {
       provider: 'manual',
     });
 
-    const school = await School.findById(schoolId);
+    // Atomic increment — no read-modify-write race with SMS sending.
+    const school: any = await School.findByIdAndUpdate(
+      schoolId,
+      { $inc: { smsBalance: credits } },
+      { new: true }
+    );
     if (!school) throw new NotFoundError('School not found');
-
-    (school as any).smsBalance = ((school as any).smsBalance || 0) + credits;
-    await school.save();
 
     try {
       await AuditLog.create({
@@ -251,6 +253,29 @@ export class SubscriptionService {
       credits,
       newBalance: (school as any).smsBalance,
       reference,
+    };
+  }
+
+  // ------------------------------------------------------------------
+  // SMS balance + low-balance flag (shown as a banner in the app)
+  // ------------------------------------------------------------------
+  static async smsBalance(schoolId: string) {
+    const school: any = await School.findById(schoolId).select('smsBalance smsMonthlyUsage').lean();
+    if (!school) throw new NotFoundError('School not found');
+    const balance = school.smsBalance || 0;
+    const LOW_THRESHOLD = 50;
+    return {
+      balance,
+      monthlyUsage: school.smsMonthlyUsage || 0,
+      nairaPerCredit: SMS_NAIRA_PER_CREDIT,
+      lowThreshold: LOW_THRESHOLD,
+      level: balance < 1 ? 'EMPTY' : balance < LOW_THRESHOLD ? 'LOW' : 'OK',
+      message:
+        balance < 1
+          ? 'SMS credit is finished. Parents are only getting in-app notices until you top up.'
+          : balance < LOW_THRESHOLD
+            ? `SMS credit is low (${balance} left). Top up so parents keep receiving SMS alerts.`
+            : null,
     };
   }
 
