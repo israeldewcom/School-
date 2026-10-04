@@ -17,11 +17,17 @@ export class StudentService {
     const expected = feeTotals?.expected ?? 0;
     const paid = feeTotals?.paid ?? 0;
 
+    // NO_INVOICE (nothing billed yet) is no longer shown as "Outstanding".
+    // OVERPAID covers credit balances. Everything else is driven by the real numbers.
     const status =
       expected === 0
-        ? 'OUTSTANDING'
+        ? paid > 0
+          ? 'OVERPAID'
+          : 'NO_INVOICE'
         : paid >= expected
-          ? 'PAID'
+          ? paid > expected
+            ? 'OVERPAID'
+            : 'PAID'
           : paid > 0
             ? 'PARTIAL'
             : 'OUTSTANDING';
@@ -53,60 +59,60 @@ export class StudentService {
   }
 
   /**
-   * Sum expected/paid per student. Uses only non-cancelled invoices
-   * and approved payments. If the same student has multiple invoices
-   * for different sessions, they all count — that's correct.
+   * Sum expected/paid per student from ONE source of truth: the non-cancelled invoices.
+   * invoice.amountPaid is updated atomically whenever a payment is approved/confirmed,
+   * so "paid" can never disagree with "expected" (the old code summed Payment documents
+   * separately, which included payments on cancelled invoices and drifted from invoices).
+   * Pass { sessionId, termId } to restrict to one term; omitted = all billed terms.
    */
-  private static async feeTotalsForStudents(schoolId: string, studentIds: string[]) {
-    const expectedByStudent = new Map<string, number>();
-    const paidByStudent = new Map<string, number>();
-
-    if (studentIds.length === 0) return new Map<string, { expected: number; paid: number }>();
+  private static async feeTotalsForStudents(
+    schoolId: string,
+    studentIds: string[],
+    scope: { sessionId?: string; termId?: string } = {}
+  ) {
+    const result = new Map<string, { expected: number; paid: number }>();
+    if (studentIds.length === 0) return result;
 
     const objectIds = studentIds.map((id) => new mongoose.Types.ObjectId(id));
+    const filter: any = {
+      schoolId,
+      studentId: { $in: objectIds },
+      status: { $nin: ['CANCELLED', 'DRAFT'] },
+    };
+    if (scope.sessionId && mongoose.isValidObjectId(scope.sessionId)) filter.sessionId = scope.sessionId;
+    if (scope.termId && mongoose.isValidObjectId(scope.termId)) filter.termId = scope.termId;
 
     try {
-      const invoices = await Invoice.find({
-        schoolId,
-        studentId: { $in: objectIds },
-        status: { $ne: 'CANCELLED' },
-      })
-        .select('studentId total')
-        .lean();
-
-      for (const inv of invoices) {
+      const invoices = await Invoice.find(filter).select('studentId total amountPaid').lean();
+      for (const inv of invoices as any[]) {
         const sid = String(inv.studentId);
-        expectedByStudent.set(sid, (expectedByStudent.get(sid) || 0) + (inv.total || 0));
+        const cur = result.get(sid) || { expected: 0, paid: 0 };
+        cur.expected += inv.total || 0;
+        cur.paid += inv.amountPaid || 0;
+        result.set(sid, cur);
       }
     } catch (err: any) {
       logger.warn(`feeTotals: invoice query failed — ${err?.message}`);
     }
 
+    // Safety net: approved payments that are NOT attached to any invoice still count as paid.
     try {
-      const payments = await Payment.find({
+      const orphan: any[] = await Payment.find({
         schoolId,
         studentId: { $in: objectIds },
         status: { $in: ['APPROVED', 'CONFIRMED'] },
-      })
-        .select('studentId amount')
-        .lean();
-
-      for (const p of payments) {
+        $or: [{ invoiceId: { $exists: false } }, { invoiceId: null }],
+      }).select('studentId amount').lean();
+      for (const p of orphan) {
         const sid = String(p.studentId);
-        paidByStudent.set(sid, (paidByStudent.get(sid) || 0) + (p.amount || 0));
+        const cur = result.get(sid) || { expected: 0, paid: 0 };
+        cur.paid += p.amount || 0;
+        result.set(sid, cur);
       }
     } catch (err: any) {
-      logger.warn(`feeTotals: payment query failed — ${err?.message}`);
+      logger.warn(`feeTotals: orphan payment query failed — ${err?.message}`);
     }
 
-    const result = new Map<string, { expected: number; paid: number }>();
-    const allIds = new Set([...expectedByStudent.keys(), ...paidByStudent.keys()]);
-    for (const sid of allIds) {
-      result.set(sid, {
-        expected: expectedByStudent.get(sid) || 0,
-        paid: paidByStudent.get(sid) || 0,
-      });
-    }
     return result;
   }
 
@@ -123,7 +129,10 @@ export class StudentService {
       .lean();
 
     const ids = students.map((s: any) => String(s._id));
-    const feeMap = await StudentService.feeTotalsForStudents(schoolId, ids);
+    const feeMap = await StudentService.feeTotalsForStudents(schoolId, ids, {
+      sessionId: query?.sessionId,
+      termId: query?.termId,
+    });
 
     return students.map((s: any) => StudentService.shape(s, feeMap.get(String(s._id))));
   }
