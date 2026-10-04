@@ -135,6 +135,9 @@ export class ReceiptService {
         logoPng: (await logoPngBuffer(school?.logo)) || undefined,
       },
       status,
+      receiptNo,
+      cashierName: cashier || undefined,
+      amountInWords: numberToWords(payment.amount || 0),
       payment: {
         reference: payment.reference,
         amount: payment.amount,
@@ -147,7 +150,7 @@ export class ReceiptService {
         amountPaid: paidToDate,
         balance,
       },
-      student: { name: studentName, admissionNumber: student.admissionNumber || '' },
+      student: { name: studentName, admissionNumber: student.admissionNumber || '', className: cls?.name || '' },
     });
     return { pdf, filename };
   }
