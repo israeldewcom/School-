@@ -9,6 +9,13 @@ export class PaymentController {
     } catch (err) { next(err); }
   }
 
+  static async summary(req: Request, res: Response, next: NextFunction) {
+    try {
+      const data = await PaymentService.summary(req.schoolId!);
+      res.json({ success: true, data });
+    } catch (err) { next(err); }
+  }
+
   static async getById(req: Request, res: Response, next: NextFunction) {
     try {
       const payment = await PaymentService.getById(req.schoolId!, req.params.id);
