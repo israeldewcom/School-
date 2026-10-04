@@ -1,9 +1,10 @@
-     // src/core/auth/auth.service.ts
+// src/core/auth/auth.service.ts
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import argon2 from 'argon2';
 import jwt, { SignOptions } from 'jsonwebtoken';
 import { User } from '../../models/User';
+import { School } from '../../models/School';
 import { AuditLog } from '../../models/AuditLog';
 import logger from '../../config/logger';
 import { getAccessSecret, getRefreshSecret } from '../../config/jwt';
@@ -115,7 +116,8 @@ export class AuthService {
     username: string,
     password: string,
     metaOrIp?: any,
-    maybeUserAgentOrRemember?: any
+    maybeUserAgentOrRemember?: any,
+    schoolSlug?: string
   ) {
     if (!username || !password) {
       throw new BadRequestError('Username and password are required');
@@ -134,16 +136,44 @@ export class AuthService {
     }
 
     const uname = String(username).toLowerCase().trim();
-    const user = await User.findOne({ username: uname }).select('+password');
-    if (!user) throw new BadRequestError('Invalid username or password');
-    if (!user.isActive) {
-      const err: any = new Error('This account has been deactivated. Contact your school owner.');
-      err.statusCode = 403;
-      throw err;
-    }
 
-    const ok = await verifyPassword(user.password, password);
-    if (!ok) throw new BadRequestError('Invalid username or password');
+    // Usernames are unique per school, not globally. Student logins use the
+    // admission number and parent logins use the phone number, so two schools
+    // can legitimately share one. Narrow by school when the client sends one.
+    const filter: any = { username: uname };
+    if (schoolSlug && String(schoolSlug).trim()) {
+      const school: any = await School.findOne({ slug: String(schoolSlug).toLowerCase().trim() })
+        .select('_id')
+        .lean();
+      if (!school) throw new BadRequestError('Invalid username or password');
+      filter.schoolId = school._id;
+    }
+    const candidates = await User.find(filter).select('+password');
+    if (candidates.length === 0) throw new BadRequestError('Invalid username or password');
+
+    let user = candidates[0];
+    if (candidates.length === 1) {
+      if (!user.isActive) {
+        const err: any = new Error('This account has been deactivated. Contact your school owner.');
+        err.statusCode = 403;
+        throw err;
+      }
+      const ok = await verifyPassword(user.password, password);
+      if (!ok) throw new BadRequestError('Invalid username or password');
+    } else {
+      const matches: any[] = [];
+      for (const c of candidates) {
+        if (c.isActive && (await verifyPassword(c.password, password))) matches.push(c);
+      }
+      if (matches.length === 0) throw new BadRequestError('Invalid username or password');
+      if (matches.length > 1) {
+        throw new BadRequestError(
+          'More than one school uses this username. Enter your school code to sign in.',
+          'SCHOOL_REQUIRED'
+        );
+      }
+      user = matches[0];
+    }
 
     if (isLegacyHash(user.password)) {
       try {
