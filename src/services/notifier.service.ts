@@ -31,13 +31,39 @@ export interface FamilyNotice {
 }
 
 export class Notifier {
+  // Remember when each school was last warned about SMS credit (once per 24h per school).
+  private static smsWarned = new Map<string, number>();
+
+  /** Tell the owner/admins (in-app) that SMS credit is empty or low. Throttled, never throws. */
+  private static async warnSmsCredit(schoolId: string, balance: number): Promise<void> {
+    try {
+      const last = Notifier.smsWarned.get(schoolId) || 0;
+      if (Date.now() - last < 24 * 60 * 60 * 1000) return;
+      Notifier.smsWarned.set(schoolId, Date.now());
+      const empty = balance < 1;
+      await Notifier.admins(
+        schoolId,
+        empty ? 'SMS credit finished' : 'SMS credit is low',
+        empty
+          ? 'Your school has no SMS credit left, so parents are only receiving in-app notices. Top up SMS credit to resume SMS alerts.'
+          : `Only ${balance} SMS credits remain. Top up soon so parents keep receiving SMS alerts.`,
+        { type: 'sms_credit', balance }
+      );
+    } catch (_) {}
+  }
+
   /** Queue a single SMS if the school has credits. Never throws. */
   static async sms(schoolId: string, phone: any, message: string): Promise<boolean> {
     try {
       const to = normalizePhone(phone);
       if (!to || !message) return false;
       const school: any = await School.findById(schoolId).select('smsBalance').lean();
-      if (!school || (school.smsBalance || 0) < 1) return false;
+      const balance = school?.smsBalance || 0;
+      if (!school || balance < 1) {
+        void Notifier.warnSmsCredit(schoolId, 0); // tell the admins instead of failing silently
+        return false;
+      }
+      if (balance < 50) void Notifier.warnSmsCredit(schoolId, balance);
       const job = await safeQueueAdd(smsQueue, 'send-sms', { schoolId, to, message });
       return !!job;
     } catch (err: any) {
