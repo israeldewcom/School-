@@ -1,22 +1,29 @@
-  import axios from 'axios';
+import axios from 'axios';
 import { env } from '../../config/env';
 import { School } from '../../models/School';
 import logger from '../../config/logger';
 import { normalizePhone } from '../../utils/phone';
+
+/** Credits used by one message: 1 per 160 characters, minimum 1. */
+export const creditsFor = (message: string): number => Math.max(1, Math.ceil((message || '').length / 160));
 
 export const sendSMS = async (schoolId: string, to: string, message: string, senderId?: string): Promise<void> => {
   if (!env.SMS_API_KEY) {
     throw new Error('SMS_API_KEY not set');
   }
 
-  // Check school balance
-  const school = await School.findById(schoolId);
-  if (!school) throw new Error('School not found');
-  if (school.smsBalance < 1) {
+  const cost = creditsFor(message);
+
+  // RESERVE credits atomically BEFORE sending, so simultaneous sends cannot overspend.
+  const reserved: any = await School.findOneAndUpdate(
+    { _id: schoolId, smsBalance: { $gte: cost } },
+    { $inc: { smsBalance: -cost, smsMonthlyUsage: cost } },
+    { new: true }
+  );
+  if (!reserved) {
     throw new Error('Insufficient SMS credits. Please top up.');
   }
 
-  // Send SMS via Termii
   try {
     await axios.post('https://api.termii.com/api/sms/send', {
       to: normalizePhone(to) || to,
@@ -26,12 +33,10 @@ export const sendSMS = async (schoolId: string, to: string, message: string, sen
       channel: 'generic',
       api_key: env.SMS_API_KEY,
     });
-    // Deduct 1 credit (or actual cost)
-    school.smsBalance -= 1;
-    school.smsMonthlyUsage += 1;
-    await school.save();
-    logger.info(`SMS sent to ${to}, remaining balance: ${school.smsBalance}`);
+    logger.info(`SMS sent to ${to}, remaining balance: ${reserved.smsBalance}`);
   } catch (error) {
+    // Provider failed -> give the credits back.
+    await School.updateOne({ _id: schoolId }, { $inc: { smsBalance: cost, smsMonthlyUsage: -cost } }).catch(() => {});
     logger.error('SMS sending failed:', error);
     throw new Error('Failed to send SMS');
   }
