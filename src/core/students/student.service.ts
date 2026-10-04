@@ -8,6 +8,7 @@ import logger from '../../config/logger';
 import { BadRequestError, NotFoundError } from '../../middleware/error.middleware';
 import { normalizeImageField, saveImage } from '../../services/storage.service';
 import { syncStudentFees } from '../../services/financeSync.service';
+import { PortalAccountService } from '../accounts/portalAccount.service';
 
 export class StudentService {
   private static shape(s: any, feeTotals?: { expected: number; paid: number }) {
@@ -152,7 +153,7 @@ export class StudentService {
     return StudentService.shape(student, feeMap.get(id));
   }
 
-  static async create(schoolId: string, data: any) {
+  static async create(schoolId: string, data: any, opts: { skipPortalAccounts?: boolean } = {}) {
     if (!data?.firstName || !String(data.firstName).trim()) {
       throw new BadRequestError('First name is required');
     }
@@ -200,6 +201,12 @@ export class StudentService {
 
     await StudentService.autoInvoiceForStudent(schoolId, String(student._id), data.classId);
     await syncStudentFees(schoolId, String(student._id));
+
+    // Create the student's portal login (admission number) and a parent
+    // login (phone number) for every linked guardian. Never throws.
+    if (!opts.skipPortalAccounts) {
+      await PortalAccountService.provisionForStudent(schoolId, student);
+    }
 
     return StudentService.getById(schoolId, String(student._id));
   }
@@ -286,6 +293,7 @@ export class StudentService {
     if (!mongoose.isValidObjectId(id)) throw new BadRequestError('Invalid student id');
     const student = await Student.findOne({ _id: id, schoolId });
     if (!student) throw new NotFoundError('Student not found');
+    const previousAdmission = student.admissionNumber;
 
     if (data.firstName !== undefined) student.firstName = String(data.firstName).trim();
     if (data.lastName !== undefined) student.lastName = String(data.lastName).trim();
@@ -322,6 +330,16 @@ export class StudentService {
     }
 
     await student.save();
+
+    // Keep the portal logins in step with the record.
+    if (student.admissionNumber !== previousAdmission) {
+      await PortalAccountService.syncStudentUsername(schoolId, id, student.admissionNumber);
+    }
+    if (data.parentIds !== undefined) {
+      await PortalAccountService.provisionParents(schoolId, student.parentIds as any[]);
+    }
+    await PortalAccountService.ensureStudentUser(schoolId, student).catch(() => undefined);
+
     return StudentService.getById(schoolId, id);
   }
 
@@ -352,6 +370,7 @@ export class StudentService {
     existing.add(parentId);
     student.parentIds = [...existing].map((s) => new mongoose.Types.ObjectId(s)) as any;
     await student.save();
+    await PortalAccountService.provisionParents(schoolId, [parentId]);
     return StudentService.getById(schoolId, studentId);
   }
 
