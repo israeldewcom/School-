@@ -5,13 +5,14 @@ import { AuthService } from './auth.service';
 export class AuthController {
   static async login(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const { username, password, remember } = req.body || {};
+      const { username, password, remember, schoolSlug } = req.body || {};
       const meta = { ip: req.ip, userAgent: req.headers['user-agent'] };
       const result = await AuthService.login(
         username,
         password,
         meta,
-        remember !== false
+        remember !== false,
+        schoolSlug
       );
       res.json({ success: true, data: result });
     } catch (err) { next(err); }
