@@ -446,6 +446,7 @@ export class SiteService {
       slug: site.slug,
       redirected: redirect,
       canonicalUrl: publicUrlFor(site.slug),
+      portalUrl: String(env.PORTAL_URL || '').replace(/\/+$/, ''),
       school: {
         name: school.name, logo: safeUrl(school.logo) || safeUrl(site.theme.logoUrl) || null, motto: school.motto || '',
         address: school.address, phone: school.phone,
