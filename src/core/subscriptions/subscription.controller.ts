@@ -47,6 +47,13 @@ export class SubscriptionController {
     } catch (err) { next(err); }
   }
 
+  static async smsBalance(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await SubscriptionService.smsBalance(req.schoolId);
+      res.json({ success: true, data: result });
+    } catch (err) { next(err); }
+  }
+
   static async trialStatus(req: Request, res: Response, next: NextFunction) {
     try {
       const result = await SubscriptionService.trialStatus(req.schoolId);
