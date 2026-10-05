@@ -268,19 +268,31 @@ export class PaymentService {
    * Two simultaneous approvals can no longer lose or double a payment.
    */
   static async applyToInvoice(schoolId: string, invoiceId: string, amount: number) {
+    // One atomic pipeline update: amountPaid, balance and status are all recomputed
+    // together. ($inc alone bypassed the pre-save hook, so `balance` went stale.)
     const updated: any = await Invoice.findOneAndUpdate(
       { _id: invoiceId, schoolId },
-      { $inc: { amountPaid: amount } },
+      [
+        { $set: { amountPaid: { $add: [{ $ifNull: ['$amountPaid', 0] }, amount] } } },
+        { $set: { balance: { $max: [{ $subtract: ['$total', '$amountPaid'] }, 0] } } },
+        {
+          $set: {
+            status: {
+              $switch: {
+                branches: [
+                  { case: { $eq: ['$status', 'CANCELLED'] }, then: 'CANCELLED' },
+                  { case: { $and: [{ $gt: ['$total', 0] }, { $gte: ['$amountPaid', '$total'] }] }, then: 'PAID' },
+                  { case: { $gt: ['$amountPaid', 0] }, then: 'PARTIALLY_PAID' },
+                ],
+                default: '$status',
+              },
+            },
+          },
+        },
+      ],
       { new: true }
     );
     if (!updated) return null;
-    const status =
-      updated.amountPaid >= updated.total ? 'PAID' : updated.amountPaid > 0 ? 'PARTIALLY_PAID' : updated.status;
-    if (status !== updated.status && updated.status !== 'CANCELLED') {
-      updated.status = status;
-      await updated.save();
-    }
-    // Keep the student's stored fee summary in step (best effort, never blocks the payment).
     try {
       const { syncStudentFees } = await import('../../services/financeSync.service');
       await syncStudentFees(schoolId, String(updated.studentId));
