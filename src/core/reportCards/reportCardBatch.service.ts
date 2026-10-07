@@ -246,6 +246,7 @@ export class ReportCardBatchService {
         className: d.student?.class || '',
         dateOfBirth: d.dateOfBirth,
         gender: d.gender,
+        photo: d.student?.photo,
       },
       session: d.sessionName || '',
       term: d.termName || '',
