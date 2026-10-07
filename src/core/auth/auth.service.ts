@@ -90,6 +90,7 @@ function serializeUser(user: any) {
     id: String(user._id),
     name: user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim(),
     username: user.username,
+    avatar: user.avatar || null,
     role: user.role,
     schoolId: user.schoolId ? String(user.schoolId) : null,
     formClassId: user.formClassId ? String(user.formClassId) : null,
