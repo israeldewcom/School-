@@ -45,6 +45,7 @@ export interface IUser extends Document {
 
   email?: string;
   phone?: string;
+  avatar?: string; // profile picture URL
 
   role: UserRole;
   isActive: boolean;
@@ -86,6 +87,7 @@ const UserSchema = new Schema<IUser>(
 
     email: { type: String, trim: true, lowercase: true },
     phone: { type: String, trim: true },
+    avatar: { type: String, trim: true },
 
     role: { type: String, enum: USER_ROLES, required: true, index: true },
     isActive: { type: Boolean, default: true, index: true },
