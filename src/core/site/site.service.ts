@@ -239,6 +239,7 @@ export class SiteService {
       classes: classes.map((c: any) => ({ id: String(c._id), name: c.name })),
       fontChoices: FONT_CHOICES,
       blockTypes: SITE_BLOCK_TYPES,
+      templates: ['modern', 'classic', 'bold'],
     };
   }
 
@@ -261,6 +262,10 @@ export class SiteService {
       if (t.fontFamily !== undefined) {
         if (!FONT_CHOICES.includes(t.fontFamily)) throw new BadRequestError('Choose a font from fontChoices.');
         site.theme.fontFamily = t.fontFamily;
+      }
+      if (t.template !== undefined) {
+        if (!['modern', 'classic', 'bold'].includes(t.template)) throw new BadRequestError('template must be modern, classic or bold');
+        site.theme.template = t.template;
       }
       if (t.heroImage !== undefined) site.theme.heroImage = safeUrl(t.heroImage) || undefined;
       if (t.logoUrl !== undefined) site.theme.logoUrl = safeUrl(t.logoUrl) || undefined;
