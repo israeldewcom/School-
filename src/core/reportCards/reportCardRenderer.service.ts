@@ -1,9 +1,10 @@
 // src/core/reportCards/reportCardRenderer.service.ts
-import { PDFDocument, rgb, StandardFonts, PDFFont, PDFPage } from 'pdf-lib';
+import { PDFDocument, rgb, StandardFonts, PDFFont, PDFPage, pushGraphicsState, popGraphicsState, moveTo, lineTo, closePath, clip, endPath } from 'pdf-lib';
 import mongoose from 'mongoose';
 import { ReportCardTemplate } from '../../models/ReportCardTemplate';
 import { NotFoundError } from '../../middleware/error.middleware';
 import logger from '../../config/logger';
+import { logoPngBuffer } from '../branding/logo.service';
 
 export interface RenderData {
   student: {
@@ -13,6 +14,7 @@ export interface RenderData {
     dateOfBirth?: string;
     gender?: string;
     age?: number;
+    photo?: string;
   };
   session: string;
   term: string;
@@ -175,6 +177,11 @@ export class ReportCardRendererService {
     };
 
     for (const pin of template.pins || []) {
+      if (pin.field === 'student_photo') {
+        try { await this.drawPhoto(pdfDoc, page, drawRect, pin, data.student?.photo); }
+        catch (err: any) { logger.warn(`Render: photo failed — ${err?.message}`); }
+        continue;
+      }
       try {
         const value = this.resolveField(pin, data, isReceipt);
         if (value === null || value === undefined || value === '') continue;
@@ -194,6 +201,24 @@ export class ReportCardRendererService {
 
     const bytes = await pdfDoc.save();
     return Buffer.from(bytes);
+  }
+
+  /** Student passport photo. pin.x / pin.y = top-left corner, pin.size = width in points. */
+  private static async drawPhoto(pdfDoc: PDFDocument, page: PDFPage, rect: any, pin: any, photo?: string) {
+    if (!photo) return;
+    const buf = await logoPngBuffer(photo);
+    if (!buf) return;
+    const img = buf[0] === 0xff ? await pdfDoc.embedJpg(buf) : await pdfDoc.embedPng(buf);
+    const w = Math.max(20, Math.min(160, Number(pin.size) || 69));
+    const h = w * 1.25;
+    // cover-fit inside the w x h box without distorting the face
+    const scale = Math.max(w / img.width, h / img.height);
+    const dw = img.width * scale, dh = img.height * scale;
+    const left = rect.x + (pin.x / 100) * rect.width;
+    const top = rect.y + rect.height - (pin.y / 100) * rect.height;
+    page.pushOperators(pushGraphicsState(), moveTo(left, top - h), lineTo(left + w, top - h), lineTo(left + w, top), lineTo(left, top), closePath(), clip(), endPath());
+    page.drawImage(img, { x: left + (w - dw) / 2, y: top - h + (h - dh) / 2, width: dw, height: dh });
+    page.pushOperators(popGraphicsState());
   }
 
   // ------------------------------------------------------------------
