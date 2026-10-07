@@ -25,6 +25,7 @@ const VALID_REPORT_CARD_FIELDS = new Set([
   'next_term_begins',
   'school_name',
   'custom_text',
+  'student_photo',
 ]);
 
 const VALID_RECEIPT_FIELDS = new Set([
