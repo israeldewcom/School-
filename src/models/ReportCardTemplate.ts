@@ -22,6 +22,7 @@ export type TemplateField =
   | 'next_term_begins'
   | 'school_name'
   | 'custom_text'
+  | 'student_photo'
   // Receipt-only fields
   | 'receipt_no'
   | 'date'
@@ -71,6 +72,7 @@ export interface IReportCardTemplate extends Document {
   tables: ITemplateTable[];
   isActive: boolean;
   isDefault: boolean;
+  presetId?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -116,6 +118,7 @@ const ReportCardTemplateSchema = new Schema<IReportCardTemplate>(
     tables: { type: [TableSchema], default: [] },
     isActive: { type: Boolean, default: true },
     isDefault: { type: Boolean, default: false, index: true },
+    presetId: { type: String },
   },
   { timestamps: true }
 );
