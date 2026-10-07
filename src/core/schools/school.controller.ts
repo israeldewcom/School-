@@ -8,6 +8,9 @@ import { AuthService } from '../auth/auth.service';
 import { SubscriptionPlan } from '../../models/SubscriptionPlan';
 import { Subscription } from '../../models/Subscription';
 import logger from '../../config/logger';
+import { LogoService } from '../branding/logo.service';
+import { SchoolSite } from '../../models/SchoolSite';
+import { ReportCardPresetService } from '../reportCards/reportCardPresets.service';
 
 export class SchoolController {
   static async ping(_req: Request, res: Response) {
@@ -113,6 +116,9 @@ export class SchoolController {
         username,
         password,
         loadSample,
+        logo,
+        primaryColor,
+        secondaryColor,
       } = req.body;
 
       logger.info('Onboarding request received:', { schoolName, username, ownerName });
@@ -122,6 +128,12 @@ export class SchoolController {
           success: false,
           message: 'Missing required fields: schoolName, username, password, ownerName',
         });
+        return;
+      }
+
+      // The platform's own name is never a valid school name (it would brand the school's website as SchoolFlow).
+      if (/^\s*school\s*-?\s*flow\s*$/i.test(String(schoolName))) {
+        res.status(400).json({ success: false, message: 'Please enter your own school\'s name, not the platform name.' });
         return;
       }
 
@@ -235,6 +247,21 @@ export class SchoolController {
         school.subscriptionId = subscription._id.toString();
         await school.save();
         logger.info(`Trial subscription created for school ${school._id}`);
+      }
+
+      // Branding from the wizard: logo upload + colours, then a ready-made report card design.
+      // None of this may block sign-up, so every step is best-effort.
+      try {
+        const hex = /^#[0-9a-fA-F]{6}$/;
+        const schoolIdStr = String(school._id);
+        if (logo && String(logo).startsWith('data:image')) await LogoService.upload(schoolIdStr, String(logo));
+        const theme: any = {};
+        if (hex.test(String(primaryColor || ''))) theme['theme.primaryColor'] = primaryColor;
+        if (hex.test(String(secondaryColor || ''))) theme['theme.secondaryColor'] = secondaryColor;
+        if (Object.keys(theme).length) await SchoolSite.updateOne({ schoolId: school._id }, { $set: theme });
+        await ReportCardPresetService.apply(schoolIdStr, 'modern-band', { makeDefault: true });
+      } catch (brandErr: any) {
+        logger.warn(`Onboarding branding step skipped: ${brandErr?.message}`);
       }
 
       if (loadSample) {
