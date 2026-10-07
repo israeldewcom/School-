@@ -65,6 +65,18 @@ router.use(requireSchoolContext);
 router.use(requireActiveSubscription);
 
 router.use('/schools', schoolRoutes);
+// Every signed-in user (staff, parent, student) can set their own profile picture.
+router.put('/me/avatar', async (req, res, next) => {
+  try {
+    const dataUrl = String(req.body?.dataUrl || '');
+    if (!dataUrl.startsWith('data:image/')) { res.status(400).json({ success: false, message: 'Send the picture as an image data URL.' }); return; }
+    const { saveImage } = await import('../services/storage.service');
+    const { User } = await import('../models/User');
+    const url = await saveImage({ dataUrl, folder: 'avatars' });
+    await User.updateOne({ _id: req.userId }, { $set: { avatar: url } });
+    res.json({ success: true, data: { avatar: url } });
+  } catch (e) { next(e); }
+});
 router.use('/users', userRoutes);
 router.use('/portal', portalRoutes);                            // parent + student portal
 router.use('/students', checkEntitlement('students'), studentRoutes);
