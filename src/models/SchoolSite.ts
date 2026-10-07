@@ -61,6 +61,7 @@ export interface ISchoolSite extends Document {
     fontFamily: string;
     logoUrl?: string;
     heroImage?: string;
+    template?: 'modern' | 'classic' | 'bold';
   };
   seo: { title?: string; description?: string };
   socials: { facebook?: string; instagram?: string; x?: string; youtube?: string; whatsapp?: string };
@@ -117,6 +118,7 @@ const SchoolSiteSchema = new Schema<ISchoolSite>(
       fontFamily: { type: String, default: 'Inter, system-ui, sans-serif' },
       logoUrl: { type: String },
       heroImage: { type: String },
+      template: { type: String, enum: ['modern', 'classic', 'bold'], default: 'modern' },
     },
     seo: { title: String, description: String },
     socials: {
