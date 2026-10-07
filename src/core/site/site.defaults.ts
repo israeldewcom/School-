@@ -42,7 +42,7 @@ export function defaultFormFields(): IAdmissionFormField[] {
     f('classAppliedId', 'Class applying for', 'select', 'applicant', true),
     f('previousSchool', 'Previous school (if any)', 'text', 'applicant', false),
     f('applicantAddress', 'Home address', 'textarea', 'applicant', false),
-    f('applicantPhoto', "Child's passport photograph", 'photo', 'applicant', false),
+    f('applicantPhoto', "Child's passport photograph", 'photo', 'applicant', true),
     f('parentFirstName', "Parent/guardian's first name", 'text', 'parent', true),
     f('parentLastName', "Parent/guardian's last name", 'text', 'parent', true),
     f('parentPhone', 'Phone number', 'phone', 'parent', true, { placeholder: '08012345678' }),
