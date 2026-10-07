@@ -70,6 +70,7 @@ export class PortalAccountService {
         studentId,
         name,
         email: placeholderEmail(username, schoolId),
+        avatar: student.photo || undefined,
         isActive: true,
       });
       return { user, username, password: admission, isNew: true };
